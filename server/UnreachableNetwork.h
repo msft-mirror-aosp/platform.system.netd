@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014 The Android Open Source Project
+ * Copyright (C) 2021 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,32 +16,20 @@
 
 #pragma once
 
-#include <set>
-
 #include "Network.h"
 
 namespace android::net {
 
-// A VirtualNetwork may be "secure" or not.
-//
-// A secure VPN is the usual type of VPN that grabs the default route (and thus all user traffic).
-// Only a few privileged UIDs may skip the VPN and go directly to the underlying physical network.
-//
-// A non-secure VPN ("bypassable" VPN) also grabs all user traffic by default. But all apps are
-// permitted to skip it and pick any other network for their connections.
-class VirtualNetwork : public Network {
-public:
-    VirtualNetwork(unsigned netId, bool secure);
-    virtual ~VirtualNetwork();
+class UnreachableNetwork : public Network {
+  public:
+    explicit UnreachableNetwork(unsigned netId);
     [[nodiscard]] int addUsers(const UidRanges& uidRanges, uint32_t subPriority) override;
     [[nodiscard]] int removeUsers(const UidRanges& uidRanges, uint32_t subPriority) override;
-    bool isVirtual() override { return true; }
+    bool isUnreachable() override { return true; }
     bool canAddUsers() override { return true; }
 
   private:
-    std::string getTypeString() const override { return "VIRTUAL"; };
-    [[nodiscard]] int addInterface(const std::string& interface) override;
-    [[nodiscard]] int removeInterface(const std::string& interface) override;
+    std::string getTypeString() const override { return "UNREACHABLE"; };
     bool isValidSubPriority(uint32_t priority) override;
 };
 
