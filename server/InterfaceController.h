@@ -59,6 +59,9 @@ public:
     static int setParameter(const char* family, const char* which, const char* ifName,
                             const char* parameter, const char* value);
 
+    static android::netdutils::StatusOr<std::vector<std::string>> getIfaceNames();
+    static android::netdutils::StatusOr<std::map<std::string, uint32_t>> getIfaceList();
+
     static std::mutex mutex;
 
   private:

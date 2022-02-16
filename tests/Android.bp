@@ -52,7 +52,7 @@ cc_test_library {
         "libnetutils",
         "libsysutils",
         "libutils",
-        "netd_aidl_interface-V8-cpp",
+        "netd_aidl_interface-V7-cpp",
     ],
 }
 
@@ -82,9 +82,9 @@ cc_test {
         "bpf_base_test.cpp",
         "netd_client_test.cpp",
         "netd_test.cpp",
+        "netlink_listener_test.cpp",
     ],
     include_dirs: ["system/netd/server"],
-    header_libs: ["bpf_connectivity_headers"],
     shared_libs: [
         "libbase",
         "libbinder",
@@ -103,9 +103,11 @@ cc_test {
         "libnetd_test_tun_interface",
         "libnetd_test_unsol_service",
         "libnetd_test_utils",
+        "libbpf_android",
+        "libnetdbpf",
         "libnetdutils",
-        "libnettestutils",
-        "netd_aidl_interface-V8-cpp",
+        "libqtaguid",
+        "netd_aidl_interface-V7-cpp",
         "netd_event_listener_interface-V1-cpp",
         "oemnetd_aidl_interface-cpp",
     ],
