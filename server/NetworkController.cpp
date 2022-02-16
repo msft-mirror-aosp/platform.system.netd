@@ -36,19 +36,17 @@
 #include "DummyNetwork.h"
 #include "Fwmark.h"
 #include "LocalNetwork.h"
+#include "OffloadUtils.h"
 #include "PhysicalNetwork.h"
 #include "RouteController.h"
-#include "TcUtils.h"
 #include "UnreachableNetwork.h"
 #include "VirtualNetwork.h"
 #include "netdutils/DumpWriter.h"
-#include "netdutils/Utils.h"
 #include "netid_client.h"
 
 #define DBG 0
 
 using android::netdutils::DumpWriter;
-using android::netdutils::getIfaceNames;
 
 namespace android::net {
 
@@ -152,7 +150,7 @@ NetworkController::NetworkController() :
     // TODO: perhaps only remove the clsact on the interface which is added by
     // RouteController::addInterfaceToPhysicalNetwork. Currently, the netd only
     // attach the clsact to the interface for the physical network.
-    const auto& ifaces = getIfaceNames();
+    const auto& ifaces = InterfaceController::getIfaceNames();
     if (isOk(ifaces)) {
         for (const std::string& iface : ifaces.value()) {
             if (int ifIndex = if_nametoindex(iface.c_str())) {
@@ -439,8 +437,7 @@ int NetworkController::createPhysicalOemNetwork(Permission permission, unsigned 
     return ret;
 }
 
-int NetworkController::createVirtualNetwork(unsigned netId, bool secure, NativeVpnType vpnType,
-                                            bool excludeLocalRoutes) {
+int NetworkController::createVirtualNetwork(unsigned netId, bool secure, NativeVpnType vpnType) {
     ScopedWLock lock(mRWLock);
 
     if (!(MIN_NET_ID <= netId && netId <= MAX_NET_ID)) {
@@ -461,7 +458,7 @@ int NetworkController::createVirtualNetwork(unsigned netId, bool secure, NativeV
     if (int ret = modifyFallthroughLocked(netId, true)) {
         return ret;
     }
-    mNetworks[netId] = new VirtualNetwork(netId, secure, excludeLocalRoutes);
+    mNetworks[netId] = new VirtualNetwork(netId, secure);
     return 0;
 }
 
@@ -620,7 +617,7 @@ int isWrongNetworkForUidRanges(unsigned netId, Network* network) {
 }  // namespace
 
 int NetworkController::addUsersToNetwork(unsigned netId, const UidRanges& uidRanges,
-                                         int32_t subPriority) {
+                                         uint32_t subPriority) {
     ScopedWLock lock(mRWLock);
     Network* network = getNetworkLocked(netId);
     if (int ret = isWrongNetworkForUidRanges(netId, network)) {
@@ -630,7 +627,7 @@ int NetworkController::addUsersToNetwork(unsigned netId, const UidRanges& uidRan
 }
 
 int NetworkController::removeUsersFromNetwork(unsigned netId, const UidRanges& uidRanges,
-                                              int32_t subPriority) {
+                                              uint32_t subPriority) {
     ScopedWLock lock(mRWLock);
     Network* network = getNetworkLocked(netId);
     if (int ret = isWrongNetworkForUidRanges(netId, network)) {
@@ -771,22 +768,6 @@ void NetworkController::dump(DumpWriter& dw) {
     }
     dw.decIndent();
 
-    dw.blankline();
-    dw.println("Permission of users:");
-    dw.incIndent();
-    std::vector<uid_t> systemUids;
-    std::vector<uid_t> networkUids;
-    for (const auto& [uid, permission] : mUsers) {
-        if ((permission & PERMISSION_SYSTEM) == PERMISSION_SYSTEM) {
-            systemUids.push_back(uid);
-        } else if ((permission & PERMISSION_NETWORK) == PERMISSION_NETWORK) {
-            networkUids.push_back(uid);
-        }
-    }
-    dw.println("NETWORK: %s", android::base::Join(networkUids, ", ").c_str());
-    dw.println("SYSTEM: %s", android::base::Join(systemUids, ", ").c_str());
-    dw.decIndent();
-
     dw.decIndent();
 
     dw.decIndent();
@@ -802,7 +783,7 @@ Network* NetworkController::getNetworkLocked(unsigned netId) const {
 }
 
 VirtualNetwork* NetworkController::getVirtualNetworkForUserLocked(uid_t uid) const {
-    int32_t subPriority;
+    uint32_t subPriority;
     for (const auto& [_, network] : mNetworks) {
         if (network->isVirtual() && network->appliesToUser(uid, &subPriority)) {
             return static_cast<VirtualNetwork*>(network);
@@ -811,26 +792,17 @@ VirtualNetwork* NetworkController::getVirtualNetworkForUserLocked(uid_t uid) con
     return nullptr;
 }
 
-// Returns the default network with the highest subsidiary priority among physical and unreachable
-// networks that applies to uid. For a single subsidiary priority, an uid should belong to only one
-// network.  If the uid apply to different network with the same priority at the same time, the
-// behavior is undefined. That is a configuration error.
+// Returns a network with the highest subsidiary priority among physical and unreachable networks
+// that applies to uid. For a single subsidiary priority, an uid should belong to only one network.
+// If the uid apply to different network with the same priority at the same time, the behavior is
+// undefined. That is a configuration error.
 Network* NetworkController::getPhysicalOrUnreachableNetworkForUserLocked(uid_t uid) const {
     Network* bestNetwork = nullptr;
-
-    // In this function, appliesToUser() is used to figure out if this network is the user's default
-    // network (not just if the user has access to this network). Rules at SUB_PRIORITY_NO_DEFAULT
-    // "apply to the user" but do not include a default network rule. Since their subpriority (999)
-    // is greater than SUB_PRIORITY_LOWEST (998), these rules never trump any subpriority that
-    // includes a default network rule (appliesToUser returns the "highest" (=lowest value)
-    // subPriority that includes the uid), and they get filtered out in the if-statement below.
-    int32_t bestSubPriority = UidRanges::SUB_PRIORITY_NO_DEFAULT;
+    unsigned bestSubPriority = UidRanges::LOWEST_SUB_PRIORITY + 1;
     for (const auto& [netId, network] : mNetworks) {
-        int32_t subPriority;
+        uint32_t subPriority;
         if (!network->isPhysical() && !network->isUnreachable()) continue;
         if (!network->appliesToUser(uid, &subPriority)) continue;
-        if (subPriority == UidRanges::SUB_PRIORITY_NO_DEFAULT) continue;
-
         if (subPriority < bestSubPriority) {
             bestNetwork = network;
             bestSubPriority = subPriority;
@@ -864,7 +836,7 @@ int NetworkController::checkUserNetworkAccessLocked(uid_t uid, unsigned netId) c
         return 0;
     }
     // If the UID wants to use a VPN, it can do so if and only if the VPN applies to the UID.
-    int32_t subPriority;
+    uint32_t subPriority;
     if (network->isVirtual()) {
         return network->appliesToUser(uid, &subPriority) ? 0 : -EPERM;
     }
@@ -925,13 +897,11 @@ int NetworkController::modifyRoute(unsigned netId, const char* interface, const 
 
     switch (op) {
         case ROUTE_ADD:
-            return RouteController::addRoute(interface, destination, nexthop, tableType, mtu,
-                                             0 /* priority */);
+            return RouteController::addRoute(interface, destination, nexthop, tableType, mtu);
         case ROUTE_UPDATE:
             return RouteController::updateRoute(interface, destination, nexthop, tableType, mtu);
         case ROUTE_REMOVE:
-            return RouteController::removeRoute(interface, destination, nexthop, tableType,
-                                                0 /* priority */);
+            return RouteController::removeRoute(interface, destination, nexthop, tableType);
     }
     return -EINVAL;
 }
