@@ -88,19 +88,10 @@ std::vector<std::string> listIpRoutes(const char* ipVersion, const char* table) 
     return runCommand(command);
 }
 
-bool ipRouteExists(const char* ipVersion, const char* table,
-                   const std::vector<std::string>& ipRouteSubstrings) {
+bool ipRouteExists(const char* ipVersion, const char* table, const std::string& ipRoute) {
     std::vector<std::string> routes = listIpRoutes(ipVersion, table);
     for (const auto& route : routes) {
-        bool matched = true;
-        for (const auto& substring : ipRouteSubstrings) {
-            if (route.find(substring) == std::string::npos) {
-                matched = false;
-                break;
-            }
-        }
-
-        if (matched) {
+        if (route.find(ipRoute) != std::string::npos) {
             return true;
         }
     }
