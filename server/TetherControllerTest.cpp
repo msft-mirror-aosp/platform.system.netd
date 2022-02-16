@@ -33,7 +33,7 @@
 #include <netdutils/StatusOr.h>
 
 #include "IptablesBaseTest.h"
-#include "TcUtils.h"
+#include "OffloadUtils.h"
 #include "TetherController.h"
 
 using android::base::Join;
