@@ -19,7 +19,6 @@
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <errno.h>
-#include <inttypes.h>
 #include <linux/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -41,11 +40,6 @@
 #include <netdutils/ThreadUtil.h>
 #include <sysutils/SocketClient.h>
 
-#include "Controllers.h"
-#include "netid_client.h"
-
-using android::net::gCtls;
-
 #define MDNS_SERVICE_NAME "mdnsd"
 #define MDNS_SERVICE_STATUS "init.svc.mdnsd"
 
@@ -54,27 +48,6 @@ using android::net::gCtls;
 constexpr char RESCAN[] = "1";
 
 using android::netdutils::ResponseCode;
-
-static int ifaceNameToI(const char* iface) {
-    if (iface != nullptr) {
-        return if_nametoindex(iface);
-    }
-
-    return 0;
-}
-
-static unsigned ifaceIndexToNetId(uint32_t interfaceIndex) {
-    char interfaceName[IFNAMSIZ] = {};
-    unsigned netId;
-    if (if_indextoname(interfaceIndex, interfaceName) == nullptr) {
-        ALOGE("Interface %d was not found", interfaceIndex);
-        return NETID_UNSET;
-    } else if ((netId = gCtls->netCtrl.getNetworkForInterface(interfaceName)) == NETID_UNSET) {
-        ALOGE("Network was not found for interface %s", interfaceName);
-        return NETID_UNSET;
-    }
-    return netId;
-}
 
 MDnsSdListener::MDnsSdListener() : FrameworkListener(SOCKET_NAME, true) {
     Monitor *m = new Monitor();
@@ -90,11 +63,15 @@ MDnsSdListener::Handler::Handler(Monitor *m, MDnsSdListener *listener) :
 
 MDnsSdListener::Handler::~Handler() {}
 
-void MDnsSdListener::Handler::discover(SocketClient* cli, uint32_t ifIndex, const char* regType,
-                                       const char* domain, const int requestId,
-                                       const int requestFlags) {
+void MDnsSdListener::Handler::discover(SocketClient *cli,
+        const char *iface,
+        const char *regType,
+        const char *domain,
+        const int requestId,
+        const int requestFlags) {
     if (VDBG) {
-        ALOGD("discover(%d, %s, %s, %d, %d)", ifIndex, regType, domain, requestId, requestFlags);
+        ALOGD("discover(%s, %s, %s, %d, %d)", iface, regType, domain, requestId,
+                requestFlags);
     }
     Context *context = new Context(requestId, mListener);
     DNSServiceRef *ref = mMonitor->allocateServiceRef(requestId, context);
@@ -106,9 +83,10 @@ void MDnsSdListener::Handler::discover(SocketClient* cli, uint32_t ifIndex, cons
     }
     if (VDBG) ALOGD("using ref %p", ref);
     DNSServiceFlags nativeFlags = iToFlags(requestFlags);
+    int interfaceInt = ifaceNameToI(iface);
 
-    DNSServiceErrorType result = DNSServiceBrowse(ref, nativeFlags, ifIndex, regType, domain,
-                                                  &MDnsSdListenerDiscoverCallback, context);
+    DNSServiceErrorType result = DNSServiceBrowse(ref, nativeFlags, interfaceInt, regType,
+            domain, &MDnsSdListenerDiscoverCallback, context);
     if (result != kDNSServiceErr_NoError) {
         ALOGE("Discover request %d got an error from DNSServiceBrowse %d", requestId, result);
         mMonitor->freeServiceRef(requestId);
@@ -123,18 +101,16 @@ void MDnsSdListener::Handler::discover(SocketClient* cli, uint32_t ifIndex, cons
 }
 
 void MDnsSdListenerDiscoverCallback(DNSServiceRef /* sdRef */, DNSServiceFlags flags,
-                                    uint32_t ifIndex, DNSServiceErrorType errorCode,
-                                    const char* serviceName, const char* regType,
-                                    const char* replyDomain, void* inContext) {
+        uint32_t /* interfaceIndex */, DNSServiceErrorType errorCode, const char *serviceName,
+        const char *regType, const char *replyDomain, void *inContext) {
     MDnsSdListener::Context *context = reinterpret_cast<MDnsSdListener::Context *>(inContext);
+    char *msg;
     int refNumber = context->mRefNumber;
 
     if (errorCode != kDNSServiceErr_NoError) {
-        char* msg;
         asprintf(&msg, "%d %d", refNumber, errorCode);
         context->mListener->sendBroadcast(ResponseCode::ServiceDiscoveryFailed, msg, false);
         if (DBG) ALOGE("discover failure for %d, error= %d", refNumber, errorCode);
-        free(msg);
     } else {
         int respCode;
         char *quotedServiceName = SocketClient::quoteArg(serviceName);
@@ -151,16 +127,11 @@ void MDnsSdListenerDiscoverCallback(DNSServiceRef /* sdRef */, DNSServiceFlags f
             }
             respCode = ResponseCode::ServiceDiscoveryServiceRemoved;
         }
-        unsigned netId = ifaceIndexToNetId(ifIndex);
-        // If the network is not found, still send the broadcast back and let
-        // the service decide what to do with a callback with an empty network
-        char* msg;
-        asprintf(&msg, "%d %s %s %s %" PRIu32 " %u", refNumber, quotedServiceName, regType,
-                 replyDomain, ifIndex, netId);
-        context->mListener->sendBroadcast(respCode, msg, false);
-        free(msg);
+        asprintf(&msg, "%d %s %s %s", refNumber, quotedServiceName, regType, replyDomain);
         free(quotedServiceName);
+        context->mListener->sendBroadcast(respCode, msg, false);
     }
+    free(msg);
 }
 
 void MDnsSdListener::Handler::stop(SocketClient *cli, int argc, char **argv, const char *str) {
@@ -242,12 +213,13 @@ void MDnsSdListenerRegisterCallback(DNSServiceRef /* sdRef */, DNSServiceFlags /
     free(msg);
 }
 
-void MDnsSdListener::Handler::resolveService(SocketClient* cli, int requestId, uint32_t ifIndex,
-                                             const char* serviceName, const char* regType,
-                                             const char* domain) {
+
+void MDnsSdListener::Handler::resolveService(SocketClient *cli, int requestId,
+        const char *interfaceName, const char *serviceName, const char *regType,
+        const char *domain) {
     if (VDBG) {
-        ALOGD("resolveService(%d, %d, %s, %s, %s)", requestId, ifIndex, serviceName, regType,
-              domain);
+        ALOGD("resolveService(%d, %s, %s, %s, %s)", requestId, interfaceName,
+                serviceName, regType, domain);
     }
     Context *context = new Context(requestId, mListener);
     DNSServiceRef *ref = mMonitor->allocateServiceRef(requestId, context);
@@ -258,11 +230,12 @@ void MDnsSdListener::Handler::resolveService(SocketClient* cli, int requestId, u
         return;
     }
     DNSServiceFlags nativeFlags = 0;
-    DNSServiceErrorType result = DNSServiceResolve(ref, nativeFlags, ifIndex, serviceName, regType,
-                                                   domain, &MDnsSdListenerResolveCallback, context);
+    int interfaceInt = ifaceNameToI(interfaceName);
+    DNSServiceErrorType result = DNSServiceResolve(ref, nativeFlags, interfaceInt, serviceName,
+            regType, domain, &MDnsSdListenerResolveCallback, context);
     if (result != kDNSServiceErr_NoError) {
-        ALOGE("service resolve request %d on iface %d: got an error from DNSServiceResolve %d",
-              requestId, ifIndex, result);
+        ALOGE("service resolve request %d got an error from DNSServiceResolve %d", requestId,
+                result);
         mMonitor->freeServiceRef(requestId);
         cli->sendMsg(ResponseCode::CommandParameterError,
                 "resolveService got an error from DNSServiceResolve", false);
@@ -275,10 +248,9 @@ void MDnsSdListener::Handler::resolveService(SocketClient* cli, int requestId, u
 }
 
 void MDnsSdListenerResolveCallback(DNSServiceRef /* sdRef */, DNSServiceFlags /* flags */,
-                                   uint32_t ifIndex, DNSServiceErrorType errorCode,
-                                   const char* fullname, const char* hosttarget, uint16_t port,
-                                   uint16_t txtLen, const unsigned char* txtRecord,
-                                   void* inContext) {
+        uint32_t /* interface */, DNSServiceErrorType errorCode, const char *fullname,
+        const char *hosttarget, uint16_t port, uint16_t txtLen,
+        const unsigned char *txtRecord , void *inContext) {
     MDnsSdListener::Context *context = reinterpret_cast<MDnsSdListener::Context *>(inContext);
     char *msg;
     int refNumber = context->mRefNumber;
@@ -298,8 +270,8 @@ void MDnsSdListenerResolveCallback(DNSServiceRef /* sdRef */, DNSServiceFlags /*
         char *dst = (char *)malloc(dstLength);
         b64_ntop(txtRecord, txtLen, dst, dstLength);
 
-        asprintf(&msg, "%d %s %s %d %d \"%s\" %d", refNumber, quotedFullName, quotedHostTarget,
-                 port, txtLen, dst, ifIndex);
+        asprintf(&msg, "%d %s %s %d %d \"%s\"", refNumber, quotedFullName, quotedHostTarget, port,
+                 txtLen, dst);
         free(quotedFullName);
         free(quotedHostTarget);
         free(dst);
@@ -312,9 +284,9 @@ void MDnsSdListenerResolveCallback(DNSServiceRef /* sdRef */, DNSServiceFlags /*
     free(msg);
 }
 
-void MDnsSdListener::Handler::getAddrInfo(SocketClient* cli, int requestId, uint32_t ifIndex,
-                                          uint32_t protocol, const char* hostname) {
-    if (VDBG) ALOGD("getAddrInfo(%d, %u %d, %s)", requestId, ifIndex, protocol, hostname);
+void MDnsSdListener::Handler::getAddrInfo(SocketClient *cli, int requestId,
+        const char *interfaceName, uint32_t protocol, const char *hostname) {
+    if (VDBG) ALOGD("getAddrInfo(%d, %s %d, %s)", requestId, interfaceName, protocol, hostname);
     Context *context = new Context(requestId, mListener);
     DNSServiceRef *ref = mMonitor->allocateServiceRef(requestId, context);
     if (ref == nullptr) {
@@ -324,9 +296,9 @@ void MDnsSdListener::Handler::getAddrInfo(SocketClient* cli, int requestId, uint
         return;
     }
     DNSServiceFlags nativeFlags = 0;
-    DNSServiceErrorType result =
-            DNSServiceGetAddrInfo(ref, nativeFlags, ifIndex, protocol, hostname,
-                                  &MDnsSdListenerGetAddrInfoCallback, context);
+    int interfaceInt = ifaceNameToI(interfaceName);
+    DNSServiceErrorType result = DNSServiceGetAddrInfo(ref, nativeFlags, interfaceInt, protocol,
+            hostname, &MDnsSdListenerGetAddrInfoCallback, context);
     if (result != kDNSServiceErr_NoError) {
         ALOGE("getAddrInfo request %d got an error from DNSServiceGetAddrInfo %d", requestId,
                 result);
@@ -342,14 +314,10 @@ void MDnsSdListener::Handler::getAddrInfo(SocketClient* cli, int requestId, uint
 }
 
 void MDnsSdListenerGetAddrInfoCallback(DNSServiceRef /* sdRef */, DNSServiceFlags /* flags */,
-                                       uint32_t ifIndex, DNSServiceErrorType errorCode,
-                                       const char* hostname, const struct sockaddr* const sa,
-                                       uint32_t ttl, void* inContext) {
+        uint32_t /* interface */, DNSServiceErrorType errorCode, const char *hostname,
+        const struct sockaddr *const sa, uint32_t ttl, void *inContext) {
     MDnsSdListener::Context *context = reinterpret_cast<MDnsSdListener::Context *>(inContext);
     int refNumber = context->mRefNumber;
-    unsigned netId = ifaceIndexToNetId(ifIndex);
-    // If the network is not found, still send a callback with an empty network
-    // and let the service decide what to do with it
 
     if (errorCode != kDNSServiceErr_NoError) {
         char *msg;
@@ -366,8 +334,7 @@ void MDnsSdListenerGetAddrInfoCallback(DNSServiceRef /* sdRef */, DNSServiceFlag
         } else {
             inet_ntop(sa->sa_family, &(((struct sockaddr_in6 *)sa)->sin6_addr), addr, sizeof(addr));
         }
-        asprintf(&msg, "%d %s %d %s %" PRIu32 " %u", refNumber, quotedHostname, ttl, addr, ifIndex,
-                 netId);
+        asprintf(&msg, "%d %s %d %s", refNumber, quotedHostname, ttl, addr);
         free(quotedHostname);
         context->mListener->sendBroadcast(ResponseCode::ServiceGetAddrInfoSuccess, msg, false);
         if (VDBG) {
@@ -423,6 +390,15 @@ void MDnsSdListenerSetHostnameCallback(DNSServiceRef /* sdRef */, DNSServiceFlag
     free(msg);
 }
 
+
+int MDnsSdListener::Handler::ifaceNameToI(const char * /* iface */) {
+    return 0;
+}
+
+const char *MDnsSdListener::Handler::iToIfaceName(int /* i */) {
+    return nullptr;
+}
+
 DNSServiceFlags MDnsSdListener::Handler::iToFlags(int /* i */) {
     return 0;
 }
@@ -445,15 +421,15 @@ int MDnsSdListener::Handler::runCommand(SocketClient *cli,
     char* cmd = argv[1];
 
     if (strcmp(cmd, "discover") == 0) {
-        if (argc != 5) {
+        if (argc != 4) {
             cli->sendMsg(ResponseCode::CommandParameterError,
                     "Invalid number of arguments to mdnssd discover", false);
             return 0;
         }
         int requestId = strtol(argv[2], nullptr, 10);
         char *serviceType = argv[3];
-        uint32_t interfaceIdx = atoi(argv[4]);
-        discover(cli, interfaceIdx, serviceType, nullptr, requestId, 0);
+
+        discover(cli, nullptr, serviceType, nullptr, requestId, 0);
     } else if (strcmp(cmd, "stop-discover") == 0) {
         stop(cli, argc, argv, "discover");
     } else if (strcmp(cmd, "register") == 0) {
@@ -486,17 +462,17 @@ int MDnsSdListener::Handler::runCommand(SocketClient *cli,
     } else if (strcmp(cmd, "stop-register") == 0) {
         stop(cli, argc, argv, "register");
     } else if (strcmp(cmd, "resolve") == 0) {
-        if (argc != 7) {
+        if (argc != 6) {
             cli->sendMsg(ResponseCode::CommandParameterError,
                     "Invalid number of arguments to mdnssd resolve", false);
             return 0;
         }
         int requestId = atoi(argv[2]);
+        char *interfaceName = nullptr;  // will use all
         char *serviceName = argv[3];
         char *regType = argv[4];
         char *domain = argv[5];
-        uint32_t interfaceIdx = atoi(argv[6]);
-        resolveService(cli, requestId, interfaceIdx, serviceName, regType, domain);
+        resolveService(cli, requestId, interfaceName, serviceName, regType, domain);
     } else if (strcmp(cmd, "stop-resolve") == 0) {
         stop(cli, argc, argv, "resolve");
     } else if (strcmp(cmd, "start-service") == 0) {
@@ -523,16 +499,16 @@ int MDnsSdListener::Handler::runCommand(SocketClient *cli,
     } else if (strcmp(cmd, "stop-sethostname") == 0) {
         stop(cli, argc, argv, "sethostname");
     } else if (strcmp(cmd, "getaddrinfo") == 0) {
-        if (argc != 5) {
+        if (argc != 4) {
             cli->sendMsg(ResponseCode::CommandParameterError,
                     "Invalid number of arguments to mdnssd getaddrinfo", false);
             return 0;
         }
         int requestId = atoi(argv[2]);
         char *hostname = argv[3];
-        uint32_t ifIndex = atoi(argv[4]);
+        char *interfaceName = nullptr;  // default
         int protocol = 0;            // intelligient heuristic (both v4 + v6)
-        getAddrInfo(cli, requestId, ifIndex, protocol, hostname);
+        getAddrInfo(cli, requestId, interfaceName, protocol, hostname);
     } else if (strcmp(cmd, "stop-getaddrinfo") == 0) {
         stop(cli, argc, argv, "getaddrinfo");
     } else {
