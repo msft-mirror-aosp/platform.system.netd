@@ -22,7 +22,6 @@
 #include <gtest/gtest.h>
 
 #include <netdutils/MockSyscalls.h>
-#include <netdutils/Utils.h>
 
 #include "InterfaceController.h"
 
@@ -37,16 +36,14 @@ namespace net {
 namespace {
 
 using netdutils::Fd;
-using netdutils::getIfaceList;
-using netdutils::getIfaceNames;
-using netdutils::makeSlice;
 using netdutils::ScopedMockSyscalls;
 using netdutils::Slice;
 using netdutils::Status;
-using netdutils::statusFromErrno;
 using netdutils::StatusOr;
 using netdutils::UniqueFd;
+using netdutils::makeSlice;
 using netdutils::status::ok;
+using netdutils::statusFromErrno;
 
 constexpr Fd kDevRandomFd(777);
 constexpr Fd kStableSecretFd(9999);
@@ -182,7 +179,7 @@ TEST_F(StablePrivacyTest, ExistingPropertyWriteFail) {
 class GetIfaceListTest : public testing::Test {};
 
 TEST_F(GetIfaceListTest, IfaceNames) {
-    StatusOr<std::vector<std::string>> ifaceNames = getIfaceNames();
+    StatusOr<std::vector<std::string>> ifaceNames = InterfaceController::getIfaceNames();
     EXPECT_EQ(ok, ifaceNames.status());
     struct ifaddrs *ifaddr, *ifa;
     EXPECT_EQ(0, getifaddrs(&ifaddr));
@@ -195,7 +192,7 @@ TEST_F(GetIfaceListTest, IfaceNames) {
 }
 
 TEST_F(GetIfaceListTest, IfaceExist) {
-    StatusOr<std::map<std::string, uint32_t>> ifaceMap = getIfaceList();
+    StatusOr<std::map<std::string, uint32_t>> ifaceMap = InterfaceController::getIfaceList();
     EXPECT_EQ(ok, ifaceMap.status());
     struct ifaddrs *ifaddr, *ifa;
     EXPECT_EQ(0, getifaddrs(&ifaddr));
