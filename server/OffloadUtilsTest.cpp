@@ -13,38 +13,38 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * TcUtilsTest.cpp - unit tests for TcUtils.cpp
+ * OffloadUtilsTest.cpp - unit tests for OffloadUtils.cpp
  */
 
 #include <gtest/gtest.h>
 
-#include "TcUtils.h"
+#include "OffloadUtils.h"
 
 #include <linux/if_arp.h>
 #include <stdlib.h>
 #include <sys/wait.h>
 
 #include "bpf/BpfUtils.h"
-#include "bpf_shared.h"
+#include "netdbpf/bpf_shared.h"
 
 namespace android {
 namespace net {
 
-class TcUtilsTest : public ::testing::Test {
+class OffloadUtilsTest : public ::testing::Test {
   public:
     void SetUp() {}
 };
 
-TEST_F(TcUtilsTest, HardwareAddressTypeOfNonExistingIf) {
+TEST_F(OffloadUtilsTest, HardwareAddressTypeOfNonExistingIf) {
     ASSERT_EQ(-ENODEV, hardwareAddressType("not_existing_if"));
 }
 
-TEST_F(TcUtilsTest, HardwareAddressTypeOfLoopback) {
+TEST_F(OffloadUtilsTest, HardwareAddressTypeOfLoopback) {
     ASSERT_EQ(ARPHRD_LOOPBACK, hardwareAddressType("lo"));
 }
 
 // If wireless 'wlan0' interface exists it should be Ethernet.
-TEST_F(TcUtilsTest, HardwareAddressTypeOfWireless) {
+TEST_F(OffloadUtilsTest, HardwareAddressTypeOfWireless) {
     int type = hardwareAddressType("wlan0");
     if (type == -ENODEV) return;
 
@@ -53,7 +53,7 @@ TEST_F(TcUtilsTest, HardwareAddressTypeOfWireless) {
 
 // If cellular 'rmnet_data0' interface exists it should
 // *probably* not be Ethernet and instead be RawIp.
-TEST_F(TcUtilsTest, HardwareAddressTypeOfCellular) {
+TEST_F(OffloadUtilsTest, HardwareAddressTypeOfCellular) {
     int type = hardwareAddressType("rmnet_data0");
     if (type == -ENODEV) return;
 
@@ -65,13 +65,13 @@ TEST_F(TcUtilsTest, HardwareAddressTypeOfCellular) {
     ASSERT_EQ(ARPHRD_RAWIP, type);
 }
 
-TEST_F(TcUtilsTest, IsEthernetOfNonExistingIf) {
+TEST_F(OffloadUtilsTest, IsEthernetOfNonExistingIf) {
     auto res = isEthernet("not_existing_if");
     ASSERT_FALSE(res.ok());
     ASSERT_EQ(ENODEV, res.error().code());
 }
 
-TEST_F(TcUtilsTest, IsEthernetOfLoopback) {
+TEST_F(OffloadUtilsTest, IsEthernetOfLoopback) {
     auto res = isEthernet("lo");
     ASSERT_FALSE(res.ok());
     ASSERT_EQ(EAFNOSUPPORT, res.error().code());
@@ -79,7 +79,7 @@ TEST_F(TcUtilsTest, IsEthernetOfLoopback) {
 
 // If wireless 'wlan0' interface exists it should be Ethernet.
 // See also HardwareAddressTypeOfWireless.
-TEST_F(TcUtilsTest, IsEthernetOfWireless) {
+TEST_F(OffloadUtilsTest, IsEthernetOfWireless) {
     auto res = isEthernet("wlan0");
     if (!res.ok() && res.error().code() == ENODEV) return;
 
@@ -90,7 +90,7 @@ TEST_F(TcUtilsTest, IsEthernetOfWireless) {
 // If cellular 'rmnet_data0' interface exists it should
 // *probably* not be Ethernet and instead be RawIp.
 // See also HardwareAddressTypeOfCellular.
-TEST_F(TcUtilsTest, IsEthernetOfCellular) {
+TEST_F(OffloadUtilsTest, IsEthernetOfCellular) {
     auto res = isEthernet("rmnet_data0");
     if (!res.ok() && res.error().code() == ENODEV) return;
 
@@ -98,50 +98,50 @@ TEST_F(TcUtilsTest, IsEthernetOfCellular) {
     ASSERT_FALSE(res.value());
 }
 
-TEST_F(TcUtilsTest, DeviceMTUOfNonExistingIf) {
+TEST_F(OffloadUtilsTest, DeviceMTUOfNonExistingIf) {
     ASSERT_EQ(-ENODEV, deviceMTU("not_existing_if"));
 }
 
-TEST_F(TcUtilsTest, DeviceMTUofLoopback) {
+TEST_F(OffloadUtilsTest, DeviceMTUofLoopback) {
     ASSERT_EQ(65536, deviceMTU("lo"));
 }
 
-TEST_F(TcUtilsTest, GetClatEgress4MapFd) {
+TEST_F(OffloadUtilsTest, GetClatEgress4MapFd) {
     int fd = getClatEgress4MapFd();
     ASSERT_GE(fd, 3);  // 0,1,2 - stdin/out/err, thus fd >= 3
     EXPECT_EQ(FD_CLOEXEC, fcntl(fd, F_GETFD));
     close(fd);
 }
 
-TEST_F(TcUtilsTest, GetClatEgress4RawIpProgFd) {
+TEST_F(OffloadUtilsTest, GetClatEgress4RawIpProgFd) {
     int fd = getClatEgress4ProgFd(RAWIP);
     ASSERT_GE(fd, 3);
     EXPECT_EQ(FD_CLOEXEC, fcntl(fd, F_GETFD));
     close(fd);
 }
 
-TEST_F(TcUtilsTest, GetClatEgress4EtherProgFd) {
+TEST_F(OffloadUtilsTest, GetClatEgress4EtherProgFd) {
     int fd = getClatEgress4ProgFd(ETHER);
     ASSERT_GE(fd, 3);
     EXPECT_EQ(FD_CLOEXEC, fcntl(fd, F_GETFD));
     close(fd);
 }
 
-TEST_F(TcUtilsTest, GetClatIngress6MapFd) {
+TEST_F(OffloadUtilsTest, GetClatIngress6MapFd) {
     int fd = getClatIngress6MapFd();
     ASSERT_GE(fd, 3);  // 0,1,2 - stdin/out/err, thus fd >= 3
     EXPECT_EQ(FD_CLOEXEC, fcntl(fd, F_GETFD));
     close(fd);
 }
 
-TEST_F(TcUtilsTest, GetClatIngress6RawIpProgFd) {
+TEST_F(OffloadUtilsTest, GetClatIngress6RawIpProgFd) {
     int fd = getClatIngress6ProgFd(RAWIP);
     ASSERT_GE(fd, 3);
     EXPECT_EQ(FD_CLOEXEC, fcntl(fd, F_GETFD));
     close(fd);
 }
 
-TEST_F(TcUtilsTest, GetClatIngress6EtherProgFd) {
+TEST_F(OffloadUtilsTest, GetClatIngress6EtherProgFd) {
     int fd = getClatIngress6ProgFd(ETHER);
     ASSERT_GE(fd, 3);
     EXPECT_EQ(FD_CLOEXEC, fcntl(fd, F_GETFD));
@@ -151,7 +151,7 @@ TEST_F(TcUtilsTest, GetClatIngress6EtherProgFd) {
 // See Linux kernel source in include/net/flow.h
 #define LOOPBACK_IFINDEX 1
 
-TEST_F(TcUtilsTest, AttachReplaceDetachClsactLo) {
+TEST_F(OffloadUtilsTest, AttachReplaceDetachClsactLo) {
     // This attaches and detaches a configuration-less and thus no-op clsact
     // qdisc to loopback interface (and it takes fractions of a second)
     EXPECT_EQ(0, tcQdiscAddDevClsact(LOOPBACK_IFINDEX));
@@ -192,19 +192,19 @@ static void checkAttachDetachBpfFilterClsactLo(const bool ingress, const bool et
     close(clatBpfFd);
 }
 
-TEST_F(TcUtilsTest, CheckAttachBpfFilterRawIpClsactEgressLo) {
+TEST_F(OffloadUtilsTest, CheckAttachBpfFilterRawIpClsactEgressLo) {
     checkAttachDetachBpfFilterClsactLo(EGRESS, RAWIP);
 }
 
-TEST_F(TcUtilsTest, CheckAttachBpfFilterEthernetClsactEgressLo) {
+TEST_F(OffloadUtilsTest, CheckAttachBpfFilterEthernetClsactEgressLo) {
     checkAttachDetachBpfFilterClsactLo(EGRESS, ETHER);
 }
 
-TEST_F(TcUtilsTest, CheckAttachBpfFilterRawIpClsactIngressLo) {
+TEST_F(OffloadUtilsTest, CheckAttachBpfFilterRawIpClsactIngressLo) {
     checkAttachDetachBpfFilterClsactLo(INGRESS, RAWIP);
 }
 
-TEST_F(TcUtilsTest, CheckAttachBpfFilterEthernetClsactIngressLo) {
+TEST_F(OffloadUtilsTest, CheckAttachBpfFilterEthernetClsactIngressLo) {
     checkAttachDetachBpfFilterClsactLo(INGRESS, ETHER);
 }
 

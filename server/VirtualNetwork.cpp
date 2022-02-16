@@ -27,20 +27,18 @@
 namespace android {
 namespace net {
 
-VirtualNetwork::VirtualNetwork(unsigned netId, bool secure, bool excludeLocalRoutes)
-    : Network(netId, secure), mExcludeLocalRoutes(excludeLocalRoutes) {}
+VirtualNetwork::VirtualNetwork(unsigned netId, bool secure) : Network(netId, secure) {}
 
 VirtualNetwork::~VirtualNetwork() {}
 
-int VirtualNetwork::addUsers(const UidRanges& uidRanges, int32_t subPriority) {
+int VirtualNetwork::addUsers(const UidRanges& uidRanges, uint32_t subPriority) {
     if (!isValidSubPriority(subPriority) || !canAddUidRanges(uidRanges, subPriority)) {
         return -EINVAL;
     }
 
     for (const std::string& interface : mInterfaces) {
         int ret = RouteController::addUsersToVirtualNetwork(mNetId, interface.c_str(), mSecure,
-                                                            {{subPriority, uidRanges}},
-                                                            mExcludeLocalRoutes);
+                                                            {{subPriority, uidRanges}});
         if (ret) {
             ALOGE("failed to add users on interface %s of netId %u", interface.c_str(), mNetId);
             return ret;
@@ -50,13 +48,12 @@ int VirtualNetwork::addUsers(const UidRanges& uidRanges, int32_t subPriority) {
     return 0;
 }
 
-int VirtualNetwork::removeUsers(const UidRanges& uidRanges, int32_t subPriority) {
+int VirtualNetwork::removeUsers(const UidRanges& uidRanges, uint32_t subPriority) {
     if (!isValidSubPriority(subPriority)) return -EINVAL;
 
     for (const std::string& interface : mInterfaces) {
         int ret = RouteController::removeUsersFromVirtualNetwork(mNetId, interface.c_str(), mSecure,
-                                                                 {{subPriority, uidRanges}},
-                                                                 mExcludeLocalRoutes);
+                                                                 {{subPriority, uidRanges}});
         if (ret) {
             ALOGE("failed to remove users on interface %s of netId %u", interface.c_str(), mNetId);
             return ret;
@@ -70,8 +67,8 @@ int VirtualNetwork::addInterface(const std::string& interface) {
     if (hasInterface(interface)) {
         return 0;
     }
-    if (int ret = RouteController::addInterfaceToVirtualNetwork(
-                mNetId, interface.c_str(), mSecure, mUidRangeMap, mExcludeLocalRoutes)) {
+    if (int ret = RouteController::addInterfaceToVirtualNetwork(mNetId, interface.c_str(), mSecure,
+                                                                mUidRangeMap)) {
         ALOGE("failed to add interface %s to VPN netId %u", interface.c_str(), mNetId);
         return ret;
     }
@@ -83,8 +80,8 @@ int VirtualNetwork::removeInterface(const std::string& interface) {
     if (!hasInterface(interface)) {
         return 0;
     }
-    if (int ret = RouteController::removeInterfaceFromVirtualNetwork(
-                mNetId, interface.c_str(), mSecure, mUidRangeMap, mExcludeLocalRoutes)) {
+    if (int ret = RouteController::removeInterfaceFromVirtualNetwork(mNetId, interface.c_str(),
+                                                                     mSecure, mUidRangeMap)) {
         ALOGE("failed to remove interface %s from VPN netId %u", interface.c_str(), mNetId);
         return ret;
     }
@@ -92,9 +89,9 @@ int VirtualNetwork::removeInterface(const std::string& interface) {
     return 0;
 }
 
-bool VirtualNetwork::isValidSubPriority(int32_t priority) {
+bool VirtualNetwork::isValidSubPriority(uint32_t priority) {
     // Only supports default subsidiary permissions.
-    return priority == UidRanges::SUB_PRIORITY_HIGHEST;
+    return priority == UidRanges::DEFAULT_SUB_PRIORITY;
 }
 
 }  // namespace net
