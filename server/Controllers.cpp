@@ -74,9 +74,9 @@ static const std::vector<const char*> FILTER_OUTPUT = {
 };
 
 static const std::vector<const char*> RAW_PREROUTING = {
+        IdletimerController::LOCAL_RAW_PREROUTING,
         ClatdController::LOCAL_RAW_PREROUTING,
         BandwidthController::LOCAL_RAW_PREROUTING,
-        IdletimerController::LOCAL_RAW_PREROUTING,
         TetherController::LOCAL_RAW_PREROUTING,
 };
 
@@ -282,7 +282,7 @@ void Controllers::init() {
     clatdCtrl.init();
     gLog.info("Initializing ClatdController: %" PRId64 "us", s.getTimeAndResetUs());
 
-    netdutils::Status tcStatus = trafficCtrl.start();
+    netdutils::Status tcStatus = trafficCtrl.initMaps();
     if (!isOk(tcStatus)) {
         gLog.error("Failed to start trafficcontroller: (%s)", toString(tcStatus).c_str());
         gLog.error("CRITICAL: sleeping 60 seconds, netd exiting with failure, crash loop likely!");
