@@ -64,8 +64,11 @@ struct FwmarkCommand {
         ON_CONNECT_COMPLETE,
         TAG_SOCKET,
         UNTAG_SOCKET,
-        _UNUSED_SET_COUNTERSET,  // unsupported, do not use this command
-        _UNUSED_DELETE_TAGDATA,  // unsupported, do not use this command
+        // TODO: use binder to pass the following two request in future after we
+        // completely get rid of qtaguid module, since these are privileged
+        // command.
+        SET_COUNTERSET,
+        DELETE_TAGDATA,
         ON_SENDMMSG,
         ON_SENDMSG,
         ON_SENDTO,
