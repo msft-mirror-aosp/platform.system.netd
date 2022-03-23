@@ -24,10 +24,12 @@ namespace android {
 namespace net {
 
 class NetworkController;
+class TrafficController;
 
 class FwmarkServer : public SocketListener {
 public:
-  explicit FwmarkServer(NetworkController* networkController, EventReporter* eventReporter);
+  explicit FwmarkServer(NetworkController* networkController, EventReporter* eventReporter,
+                        TrafficController* trafficCtrl);
 
   static constexpr const char* SOCKET_NAME = "fwmarkd";
 
@@ -40,6 +42,7 @@ private:
 
     NetworkController* const mNetworkController;
     EventReporter* mEventReporter;
+    TrafficController* mTrafficCtrl;
     bool mRedirectSocketCalls;
 };
 
