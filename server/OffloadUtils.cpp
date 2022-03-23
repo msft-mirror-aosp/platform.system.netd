@@ -14,9 +14,7 @@
  * limitations under the License.
  */
 
-#define LOG_TAG "TcUtils"
-
-#include "TcUtils.h"
+#include "OffloadUtils.h"
 
 #include <arpa/inet.h>
 #include <linux/if.h>
@@ -29,6 +27,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#define LOG_TAG "OffloadUtils"
 #include <log/log.h>
 
 #include "NetlinkCommands.h"
@@ -106,7 +105,7 @@ static int sendAndProcessNetlinkResponse(const void* req, int len) {
     int rv = setsockopt(fd, SOL_NETLINK, NETLINK_CAP_ACK, &on, sizeof(on));
     if (rv) ALOGE("setsockopt(fd, SOL_NETLINK, NETLINK_CAP_ACK, %d)", on);
 
-    // this is needed to get valid strace netlink parsing, it allocates the pid
+    // this is needed to get sane strace netlink parsing, it allocates the pid
     rv = bind(fd, (const struct sockaddr*)&KERNEL_NLADDR, sizeof(KERNEL_NLADDR));
     if (rv) {
         const int err = errno;
@@ -204,6 +203,9 @@ int doTcQdiscClsact(int ifIndex, uint16_t nlMsgType, uint16_t nlMsgFlags) {
 
     return sendAndProcessNetlinkResponse(&req, sizeof(req));
 }
+
+// The priority of clat hook - must be after tethering.
+constexpr uint16_t PRIO_CLAT = 4;
 
 // tc filter add dev .. in/egress prio 4 protocol ipv6/ip bpf object-pinned /sys/fs/bpf/...
 // direct-action
@@ -357,7 +359,7 @@ int tcFilterAddDevBpf(int ifIndex, bool ingress, uint16_t proto, int bpfFd, bool
 }
 
 // tc filter del dev .. in/egress prio 4 protocol ..
-int tcFilterDelDev(int ifIndex, bool ingress, uint16_t prio, uint16_t proto) {
+int tcFilterDelDev(int ifIndex, bool ingress, uint16_t proto) {
     const struct {
         nlmsghdr n;
         tcmsg t;
@@ -375,8 +377,7 @@ int tcFilterDelDev(int ifIndex, bool ingress, uint16_t prio, uint16_t proto) {
                             .tcm_handle = TC_H_UNSPEC,
                             .tcm_parent = TC_H_MAKE(TC_H_CLSACT,
                                                     ingress ? TC_H_MIN_INGRESS : TC_H_MIN_EGRESS),
-                            .tcm_info = (static_cast<uint32_t>(prio) << 16) |
-                                        static_cast<uint32_t>(htons(proto)),
+                            .tcm_info = static_cast<__u32>((PRIO_CLAT << 16) | htons(proto)),
                     },
     };
 
