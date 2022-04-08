@@ -66,8 +66,7 @@ bool isIfaceName(const std::string& name) {
     }
 
     for (i = 1; i < name.size(); i++) {
-        if (!isalnum(name[i]) && (name[i] != '_') && (name[i] != '-')
-                && (name[i] != ':') && (name[i] != '.')) {
+        if (!isalnum(name[i]) && (name[i] != '_') && (name[i] != '-') && (name[i] != ':')) {
             return false;
         }
     }

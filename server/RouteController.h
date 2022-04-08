@@ -17,7 +17,6 @@
 #pragma once
 
 #include "NetdConstants.h"  // IptablesTarget
-#include "Network.h"        // UidRangeMap
 #include "Permission.h"
 
 #include <android-base/thread_annotations.h>
@@ -28,53 +27,6 @@
 #include <mutex>
 
 namespace android::net {
-
-// clang-format off
-const uint32_t RULE_PRIORITY_VPN_OVERRIDE_SYSTEM     = 10000;
-const uint32_t RULE_PRIORITY_VPN_OVERRIDE_OIF        = 11000;
-const uint32_t RULE_PRIORITY_VPN_OUTPUT_TO_LOCAL     = 12000;
-const uint32_t RULE_PRIORITY_SECURE_VPN              = 13000;
-const uint32_t RULE_PRIORITY_PROHIBIT_NON_VPN        = 14000;
-// Rules used when applications explicitly select a network that they have permission to use only
-// because they are in the list of UID ranges for that network.
-//
-// Sockets from these UIDs will not match RULE_PRIORITY_EXPLICIT_NETWORK rules because they will
-// not have the necessary permission bits in the fwmark. We cannot just give any socket on any of
-// these networks the permission bits, because if the UID that created the socket loses access to
-// the network, then the socket must not match any rule that selects that network.
-const uint32_t RULE_PRIORITY_UID_EXPLICIT_NETWORK    = 15000;
-const uint32_t RULE_PRIORITY_EXPLICIT_NETWORK        = 16000;
-const uint32_t RULE_PRIORITY_OUTPUT_INTERFACE        = 17000;
-const uint32_t RULE_PRIORITY_LEGACY_SYSTEM           = 18000;
-const uint32_t RULE_PRIORITY_LEGACY_NETWORK          = 19000;
-const uint32_t RULE_PRIORITY_LOCAL_NETWORK           = 20000;
-const uint32_t RULE_PRIORITY_TETHERING               = 21000;
-// Implicit rules for sockets that connected on a given network because the network was the default
-// network for the UID.
-const uint32_t RULE_PRIORITY_UID_IMPLICIT_NETWORK    = 22000;
-const uint32_t RULE_PRIORITY_IMPLICIT_NETWORK        = 23000;
-const uint32_t RULE_PRIORITY_BYPASSABLE_VPN          = 24000;
-// reserved for RULE_PRIORITY_UID_VPN_FALLTHROUGH    = 25000;
-const uint32_t RULE_PRIORITY_VPN_FALLTHROUGH         = 26000;
-const uint32_t RULE_PRIORITY_UID_DEFAULT_NETWORK     = 27000;
-// Rule used when framework wants to disable default network from specified applications. There will
-// be a small interval the same uid range exists in both UID_DEFAULT_UNREACHABLE and
-// UID_DEFAULT_NETWORK when framework is switching user preferences.
-//
-// framework --> netd
-// step 1: set uid to unreachable network
-// step 2: remove uid from OEM-paid network list
-// or
-// step 1: add uid to OEM-paid network list
-// step 2: remove uid from unreachable network
-//
-// The priority is lower than UID_DEFAULT_NETWORK. Otherwise, the app will be told by
-// ConnectivityService that it has a network in step 1 of the second case. But if it tries to use
-// the network, it will not work. That will potentially cause a user-visible error.
-const uint32_t RULE_PRIORITY_UID_DEFAULT_UNREACHABLE = 28000;
-const uint32_t RULE_PRIORITY_DEFAULT_NETWORK         = 29000;
-const uint32_t RULE_PRIORITY_UNREACHABLE             = 32000;
-// clang-format on
 
 class UidRanges;
 
@@ -107,29 +59,25 @@ public:
     [[nodiscard]] static int removeInterfaceFromLocalNetwork(unsigned netId, const char* interface);
 
     [[nodiscard]] static int addInterfaceToPhysicalNetwork(unsigned netId, const char* interface,
-                                                           Permission permission,
-                                                           const UidRangeMap& uidRangeMap);
+                                                           Permission permission);
     [[nodiscard]] static int removeInterfaceFromPhysicalNetwork(unsigned netId,
                                                                 const char* interface,
-                                                                Permission permission,
-                                                                const UidRangeMap& uidRangeMap);
+                                                                Permission permission);
 
     [[nodiscard]] static int addInterfaceToVirtualNetwork(unsigned netId, const char* interface,
-                                                          bool secure,
-                                                          const UidRangeMap& uidRangeMap);
+                                                          bool secure, const UidRanges& uidRanges);
     [[nodiscard]] static int removeInterfaceFromVirtualNetwork(unsigned netId,
                                                                const char* interface, bool secure,
-                                                               const UidRangeMap& uidRangeMap);
+                                                               const UidRanges& uidRanges);
 
     [[nodiscard]] static int modifyPhysicalNetworkPermission(unsigned netId, const char* interface,
                                                              Permission oldPermission,
                                                              Permission newPermission);
 
     [[nodiscard]] static int addUsersToVirtualNetwork(unsigned netId, const char* interface,
-                                                      bool secure, const UidRangeMap& uidRangeMap);
+                                                      bool secure, const UidRanges& uidRanges);
     [[nodiscard]] static int removeUsersFromVirtualNetwork(unsigned netId, const char* interface,
-                                                           bool secure,
-                                                           const UidRangeMap& uidRangeMap);
+                                                           bool secure, const UidRanges& uidRanges);
 
     [[nodiscard]] static int addUsersToRejectNonSecureNetworkRule(const UidRanges& uidRanges);
     [[nodiscard]] static int removeUsersFromRejectNonSecureNetworkRule(const UidRanges& uidRanges);
@@ -160,18 +108,6 @@ public:
                                                              const char* physicalInterface,
                                                              Permission permission);
 
-    [[nodiscard]] static int addUsersToPhysicalNetwork(unsigned netId, const char* interface,
-                                                       const UidRangeMap& uidRangeMap);
-
-    [[nodiscard]] static int removeUsersFromPhysicalNetwork(unsigned netId, const char* interface,
-                                                            const UidRangeMap& uidRangeMap);
-
-    [[nodiscard]] static int addUsersToUnreachableNetwork(unsigned netId,
-                                                          const UidRangeMap& uidRangeMap);
-
-    [[nodiscard]] static int removeUsersFromUnreachableNetwork(unsigned netId,
-                                                               const UidRangeMap& uidRangeMap);
-
     // For testing.
     static int (*iptablesRestoreCommandFunction)(IptablesTarget, const std::string&,
                                                  const std::string&, std::string *);
@@ -189,10 +125,8 @@ private:
             REQUIRES(sInterfaceToTableLock);
     static uint32_t getRouteTableForInterface(const char *interface) EXCLUDES(sInterfaceToTableLock);
     static int modifyDefaultNetwork(uint16_t action, const char* interface, Permission permission);
-    static int modifyPhysicalNetwork(unsigned netId, const char* interface,
-                                     const UidRangeMap& uidRangeMap, Permission permission,
-                                     bool add, bool modifyNonUidBasedRules);
-    static int modifyUnreachableNetwork(unsigned netId, const UidRangeMap& uidRangeMap, bool add);
+    static int modifyPhysicalNetwork(unsigned netId, const char* interface, Permission permission,
+                                     bool add);
     static int modifyRoute(uint16_t action, uint16_t flags, const char* interface,
                            const char* destination, const char* nexthop, TableType tableType,
                            int mtu);
@@ -201,7 +135,7 @@ private:
     static int modifyVpnFallthroughRule(uint16_t action, unsigned vpnNetId,
                                         const char* physicalInterface, Permission permission);
     static int modifyVirtualNetwork(unsigned netId, const char* interface,
-                                    const UidRangeMap& uidRangeMap, bool secure, bool add,
+                                    const UidRanges& uidRanges, bool secure, bool add,
                                     bool modifyNonUidBasedRules);
     static void updateTableNamesFile() EXCLUDES(sInterfaceToTableLock);
 };

@@ -14,12 +14,11 @@
  * limitations under the License.
  */
 
-#define LOG_TAG "Netd"
-
 #include "LocalNetwork.h"
 
 #include "RouteController.h"
 
+#define LOG_TAG "Netd"
 #include "log/log.h"
 
 namespace android {
@@ -29,6 +28,10 @@ LocalNetwork::LocalNetwork(unsigned netId) : Network(netId) {
 }
 
 LocalNetwork::~LocalNetwork() {
+}
+
+Network::Type LocalNetwork::getType() const {
+    return LOCAL;
 }
 
 int LocalNetwork::addInterface(const std::string& interface) {

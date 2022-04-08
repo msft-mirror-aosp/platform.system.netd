@@ -42,18 +42,13 @@ class PhysicalNetwork : public Network {
 
     [[nodiscard]] int addAsDefault();
     [[nodiscard]] int removeAsDefault();
-    [[nodiscard]] int addUsers(const UidRanges& uidRanges, uint32_t subPriority) override;
-    [[nodiscard]] int removeUsers(const UidRanges& uidRanges, uint32_t subPriority) override;
-    bool isPhysical() override { return true; }
-    bool canAddUsers() override { return true; }
 
   private:
-    std::string getTypeString() const override { return "PHYSICAL"; };
+    Type getType() const override;
     [[nodiscard]] int addInterface(const std::string& interface) override;
     [[nodiscard]] int removeInterface(const std::string& interface) override;
     int destroySocketsLackingPermission(Permission permission);
     void invalidateRouteCache(const std::string& interface);
-    bool isValidSubPriority(uint32_t priority) override;
 
     Delegate* const mDelegate;
     Permission mPermission;

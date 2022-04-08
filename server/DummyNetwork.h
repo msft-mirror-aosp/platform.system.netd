@@ -27,7 +27,9 @@ class DummyNetwork : public Network {
     virtual ~DummyNetwork();
 
   private:
-    std::string getTypeString() const override { return "DUMMY"; };
+    Type getType() const override;
+    [[nodiscard]] int addInterface(const std::string& interface) override;
+    [[nodiscard]] int removeInterface(const std::string& interface) override;
 };
 
 }  // namespace android::net
