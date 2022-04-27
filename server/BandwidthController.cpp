@@ -66,6 +66,9 @@ const char BandwidthController::LOCAL_RAW_PREROUTING[] = "bw_raw_PREROUTING";
 const char BandwidthController::LOCAL_MANGLE_POSTROUTING[] = "bw_mangle_POSTROUTING";
 const char BandwidthController::LOCAL_GLOBAL_ALERT[] = "bw_global_alert";
 
+// Sync from packages/modules/Connectivity/bpf_progs/clatd.c
+#define CLAT_MARK 0xdeadc1a7
+
 auto BandwidthController::iptablesRestoreFunction = execIptablesRestoreWithOutput;
 
 using android::base::Join;
@@ -224,6 +227,8 @@ std::vector<std::string> getBasicAccountingCommands() {
             "COMMIT",
 
             "*raw",
+            // Drop duplicate ingress clat packets
+            StringPrintf("-A bw_raw_PREROUTING -m mark --mark 0x%x -j DROP", CLAT_MARK),
             // Prevents IPSec double counting (Tunnel mode and Transport mode,
             // respectively)
             ("-A bw_raw_PREROUTING -i " IPSEC_IFACE_PREFIX "+ -j RETURN"),
@@ -233,9 +238,7 @@ std::vector<std::string> getBasicAccountingCommands() {
             // interface and later correct for overhead (+20 bytes/packet).
             //
             // Note: eBPF offloaded packets never hit base interface's ip6tables, and non
-            // offloaded packets (which when using xt_qtaguid means all packets, because
-            // clat eBPF offload does not work on xt_qtaguid devices) are dropped in
-            // clat_raw_PREROUTING.
+            // offloaded packets are dropped up above due to being marked with CLAT_MARK
             //
             // Hence we will never double count and additional corrections are not needed.
             // We can simply take the sum of base and stacked (+20B/pkt) interface counts.
@@ -249,9 +252,6 @@ std::vector<std::string> getBasicAccountingCommands() {
             "-A bw_mangle_POSTROUTING -m policy --pol ipsec --dir out -j RETURN",
             // Clear the uid billing done (egress) mark before sending this packet
             StringPrintf("-A bw_mangle_POSTROUTING -j MARK --set-mark 0x0/0x%x", uidBillingMask),
-            // Packets from the clat daemon have already been counted on egress through the
-            // stacked v4-* interface.
-            "-A bw_mangle_POSTROUTING -m owner --uid-owner clat -j RETURN",
             // This is egress interface accounting: we account 464xlat traffic only on
             // the clat interface (as offloaded packets never hit base interface's ip6tables)
             // and later sum base and stacked with overhead (+20B/pkt) in higher layers
