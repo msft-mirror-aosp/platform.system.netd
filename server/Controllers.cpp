@@ -75,7 +75,6 @@ static const std::vector<const char*> FILTER_OUTPUT = {
 
 static const std::vector<const char*> RAW_PREROUTING = {
         IdletimerController::LOCAL_RAW_PREROUTING,
-        ClatdController::LOCAL_RAW_PREROUTING,
         BandwidthController::LOCAL_RAW_PREROUTING,
         TetherController::LOCAL_RAW_PREROUTING,
 };
@@ -192,8 +191,7 @@ void Controllers::createChildChains(IptablesTarget target, const char* table,
 }
 
 Controllers::Controllers()
-    : clatdCtrl(&netCtrl),
-      wakeupCtrl(
+    : wakeupCtrl(
               [this](const WakeupController::ReportArgs& args) {
                   const auto listener = eventReporter.getNetdEventListener();
                   if (listener == nullptr) {
@@ -278,21 +276,6 @@ void Controllers::initIptablesRules() {
 void Controllers::init() {
     initIptablesRules();
     Stopwatch s;
-
-    clatdCtrl.init();
-    gLog.info("Initializing ClatdController: %" PRId64 "us", s.getTimeAndResetUs());
-
-    netdutils::Status tcStatus = trafficCtrl.initMaps();
-    if (!isOk(tcStatus)) {
-        gLog.error("Failed to start trafficcontroller: (%s)", toString(tcStatus).c_str());
-        gLog.error("CRITICAL: sleeping 60 seconds, netd exiting with failure, crash loop likely!");
-        // The expected reason we get here is a major kernel or other code bug, as such
-        // the probability that things will succeed on restart of netd is pretty small.
-        // So, let's wait a minute to at least try to limit the log spam a little bit.
-        sleep(60);
-        exit(1);
-    }
-    gLog.info("Initializing traffic control: %" PRId64 "us", s.getTimeAndResetUs());
 
     bandwidthCtrl.enableBandwidthControl();
     gLog.info("Enabling bandwidth control: %" PRId64 "us", s.getTimeAndResetUs());
