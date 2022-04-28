@@ -71,6 +71,12 @@
 #include "TestUnsolService.h"
 #include "XfrmController.h"
 #include "android/net/INetd.h"
+#include "android/net/mdns/aidl/BnMDnsEventListener.h"
+#include "android/net/mdns/aidl/DiscoveryInfo.h"
+#include "android/net/mdns/aidl/GetAddressInfo.h"
+#include "android/net/mdns/aidl/IMDns.h"
+#include "android/net/mdns/aidl/RegistrationInfo.h"
+#include "android/net/mdns/aidl/ResolutionInfo.h"
 #include "binder/IServiceManager.h"
 #include "netdutils/InternetAddresses.h"
 #include "netdutils/Stopwatch.h"
@@ -102,11 +108,10 @@ using android::base::StartsWith;
 using android::base::StringPrintf;
 using android::base::Trim;
 using android::base::unique_fd;
+using android::binder::Status;
 using android::net::INetd;
 using android::net::InterfaceConfigurationParcel;
 using android::net::InterfaceController;
-using android::net::LOCAL_EXCLUSION_ROUTES_V4;
-using android::net::LOCAL_EXCLUSION_ROUTES_V6;
 using android::net::MarkMaskParcel;
 using android::net::NativeNetworkConfig;
 using android::net::NativeNetworkType;
@@ -131,6 +136,11 @@ using android::net::TetherStatsParcel;
 using android::net::TunInterface;
 using android::net::UidRangeParcel;
 using android::net::UidRanges;
+using android::net::mdns::aidl::DiscoveryInfo;
+using android::net::mdns::aidl::GetAddressInfo;
+using android::net::mdns::aidl::IMDns;
+using android::net::mdns::aidl::RegistrationInfo;
+using android::net::mdns::aidl::ResolutionInfo;
 using android::net::netd::aidl::NativeUidRangeConfig;
 using android::netdutils::getIfaceNames;
 using android::netdutils::IPAddress;
@@ -1444,16 +1454,6 @@ void expectNetworkRouteExistsWithMtu(const char* ipVersion, const std::string& i
             << "] in table " << table;
 }
 
-bool ipRouteExists(const char* ipType, std::string& ipRoute, const std::string& tableName) {
-    std::vector<std::string> routes = listIpRoutes(ipType, tableName.c_str());
-    for (const auto& route : routes) {
-        if (route.find(ipRoute) != std::string::npos) {
-            return true;
-        }
-    }
-    return false;
-}
-
 void expectVpnLocalExclusionRuleExists(const std::string& ifName, bool expectExists) {
     std::string tableName = std::string(ifName + "_local");
     // Check if rule exists
@@ -1624,84 +1624,6 @@ void expectProcessDoesNotExist(const std::string& processName) {
 }
 
 }  // namespace
-
-TEST_F(NetdBinderTest, ClatdStartStop) {
-    binder::Status status;
-
-    const std::string clatdName = StringPrintf("clatd-%s", sTun.name().c_str());
-    std::string clatAddress;
-    std::string nat64Prefix = "2001:db8:cafe:f00d:1:2::/96";
-
-    // Can't start clatd on an interface that's not part of any network...
-    status = mNetd->clatdStart(sTun.name(), nat64Prefix, &clatAddress);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(ENODEV, status.serviceSpecificErrorCode());
-
-    // ... so create a test physical network and add our tun to it.
-    const auto& config = makeNativeNetworkConfig(TEST_NETID1, NativeNetworkType::PHYSICAL,
-                                                 INetd::PERMISSION_NONE, false, false);
-    EXPECT_TRUE(mNetd->networkCreate(config).isOk());
-    EXPECT_TRUE(mNetd->networkAddInterface(TEST_NETID1, sTun.name()).isOk());
-
-    // Prefix must be 96 bits long.
-    status = mNetd->clatdStart(sTun.name(), "2001:db8:cafe:f00d::/64", &clatAddress);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(EINVAL, status.serviceSpecificErrorCode());
-
-    // Can't start clatd unless there's a default route...
-    status = mNetd->clatdStart(sTun.name(), nat64Prefix, &clatAddress);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(EADDRNOTAVAIL, status.serviceSpecificErrorCode());
-
-    // so add a default route.
-    EXPECT_TRUE(mNetd->networkAddRoute(TEST_NETID1, sTun.name(), "::/0", "").isOk());
-
-    // Can't start clatd unless there's a global address...
-    status = mNetd->clatdStart(sTun.name(), nat64Prefix, &clatAddress);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(EADDRNOTAVAIL, status.serviceSpecificErrorCode());
-
-    // ... so add a global address.
-    const std::string v6 = "2001:db8:1:2:f076:ae99:124e:aa99";
-    EXPECT_EQ(0, sTun.addAddress(v6.c_str(), 64));
-
-    // Now expect clatd to start successfully.
-    status = mNetd->clatdStart(sTun.name(), nat64Prefix, &clatAddress);
-    EXPECT_TRUE(status.isOk());
-    EXPECT_EQ(0, status.serviceSpecificErrorCode());
-
-    // Add clat interface and verify the expected rule exists
-    const std::string clatIface = "v4-" + sTun.name();
-    EXPECT_TRUE(mNetd->networkAddInterface(TEST_NETID1, clatIface).isOk());
-    expectVpnLocalExclusionRuleExists(sTun.name(), true);
-
-    // Starting it again returns EBUSY.
-    status = mNetd->clatdStart(sTun.name(), nat64Prefix, &clatAddress);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(EBUSY, status.serviceSpecificErrorCode());
-
-    expectProcessExists(clatdName);
-
-    // Expect clatd to stop successfully.
-    status = mNetd->clatdStop(sTun.name());
-    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
-    expectProcessDoesNotExist(clatdName);
-
-    // Stopping a clatd that doesn't exist returns ENODEV.
-    status = mNetd->clatdStop(sTun.name());
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(ENODEV, status.serviceSpecificErrorCode());
-    expectProcessDoesNotExist(clatdName);
-
-    // Clean up.
-    EXPECT_TRUE(mNetd->networkRemoveRoute(TEST_NETID1, sTun.name(), "::/0", "").isOk());
-    EXPECT_EQ(0, ifc_del_address(sTun.name().c_str(), v6.c_str(), 64));
-    EXPECT_TRUE(mNetd->networkDestroy(TEST_NETID1).isOk());
-
-    // Corresponding rules should be removed.
-    expectVpnLocalExclusionRuleExists(sTun.name(), false);
-    expectVpnLocalExclusionRuleExists(clatIface, false);
-}
 
 namespace {
 
@@ -3540,30 +3462,6 @@ void expectVpnFallthroughRuleExists(const std::string& ifName, int vpnNetId) {
     }
 }
 
-void expectVpnLocalExclusionRouteExists(const std::string& ifName) {
-    std::string tableName = std::string(ifName + "_local");
-    // Check if routes exist
-    for (size_t i = 0; i < ARRAY_SIZE(LOCAL_EXCLUSION_ROUTES_V4); ++i) {
-        const auto& dst = LOCAL_EXCLUSION_ROUTES_V4[i];
-        std::string vpnLocalExclusionRoute =
-                StringPrintf("%s dev %s proto static scope link", dst, ifName.c_str());
-        EXPECT_TRUE(ipRouteExists(IP_RULE_V4, vpnLocalExclusionRoute, tableName));
-    }
-    // expect no other rule
-    std::vector<std::string> routes = listIpRoutes(IP_RULE_V4, tableName.c_str());
-    EXPECT_EQ(routes.size(), ARRAY_SIZE(LOCAL_EXCLUSION_ROUTES_V4));
-
-    for (size_t i = 0; i < ARRAY_SIZE(LOCAL_EXCLUSION_ROUTES_V6); ++i) {
-        const auto& dst = LOCAL_EXCLUSION_ROUTES_V6[i];
-        std::string vpnLocalExclusionRoute =
-                StringPrintf("%s dev %s proto static", dst, ifName.c_str());
-        EXPECT_TRUE(ipRouteExists(IP_RULE_V6, vpnLocalExclusionRoute, tableName));
-    }
-    // expect no other rule
-    routes = listIpRoutes(IP_RULE_V6, tableName.c_str());
-    EXPECT_EQ(routes.size(), ARRAY_SIZE(LOCAL_EXCLUSION_ROUTES_V6));
-}
-
 void expectVpnFallthroughWorks(android::net::INetd* netdService, bool bypassable, uid_t uid,
                                const TunInterface& fallthroughNetwork,
                                const TunInterface& vpnNetwork, int vpnNetId = TEST_NETID2,
@@ -3603,8 +3501,6 @@ void expectVpnFallthroughWorks(android::net::INetd* netdService, bool bypassable
 
     // Check if local exclusion rule exists
     expectVpnLocalExclusionRuleExists(fallthroughNetwork.name(), true);
-    // Check if local exclusion route exists
-    expectVpnLocalExclusionRouteExists(fallthroughNetwork.name());
 
     // Expect fallthrough to default network
     // The fwmark differs depending on whether the VPN is bypassable or not.
@@ -5043,4 +4939,61 @@ TEST_F(PerAppNetworkPermissionsTest, PermissionOnlyAffectsUid) {
         EXPECT_EQ(bindSocketToNetwork(sock, TEST_NETID2, true /*explicitlySelected*/), 0);
         EXPECT_EQ(connect(sock, (sockaddr*)&TEST_SOCKADDR_IN6, sizeof(TEST_SOCKADDR_IN6)), -1);
     }
+}
+
+class MDnsBinderTest : public ::testing::Test {
+  public:
+    MDnsBinderTest() {
+        sp<IServiceManager> sm = android::defaultServiceManager();
+        sp<IBinder> binder = sm->getService(String16("mdns"));
+        if (binder != nullptr) {
+            mMDns = android::interface_cast<IMDns>(binder);
+        }
+    }
+
+    void SetUp() override { ASSERT_NE(nullptr, mMDns.get()); }
+
+    void TearDown() override {}
+
+  protected:
+    sp<IMDns> mMDns;
+};
+
+class TestMDnsListener : public android::net::mdns::aidl::BnMDnsEventListener {
+  public:
+    Status onServiceRegistrationStatus(const RegistrationInfo& /* status */) override {
+        return Status::ok();
+    }
+    Status onServiceDiscoveryStatus(const DiscoveryInfo& /* status */) override {
+        return Status::ok();
+    }
+    Status onServiceResolutionStatus(const ResolutionInfo& /* status */) override {
+        return Status::ok();
+    }
+    Status onGettingServiceAddressStatus(const GetAddressInfo& /* status */) override {
+        return Status::ok();
+    }
+};
+
+TEST_F(MDnsBinderTest, EventListenerTest) {
+    // Register a null listener.
+    binder::Status status = mMDns->registerEventListener(nullptr);
+    EXPECT_FALSE(status.isOk());
+
+    // Unregister a null listener.
+    status = mMDns->unregisterEventListener(nullptr);
+    EXPECT_FALSE(status.isOk());
+
+    // Register the test listener.
+    android::sp<TestMDnsListener> testListener = new TestMDnsListener();
+    status = mMDns->registerEventListener(testListener);
+    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
+
+    // Register the duplicated listener
+    status = mMDns->registerEventListener(testListener);
+    EXPECT_FALSE(status.isOk());
+
+    // Unregister the test listener
+    status = mMDns->unregisterEventListener(testListener);
+    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
 }
