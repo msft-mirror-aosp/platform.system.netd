@@ -71,6 +71,12 @@
 #include "TestUnsolService.h"
 #include "XfrmController.h"
 #include "android/net/INetd.h"
+#include "android/net/mdns/aidl/BnMDnsEventListener.h"
+#include "android/net/mdns/aidl/DiscoveryInfo.h"
+#include "android/net/mdns/aidl/GetAddressInfo.h"
+#include "android/net/mdns/aidl/IMDns.h"
+#include "android/net/mdns/aidl/RegistrationInfo.h"
+#include "android/net/mdns/aidl/ResolutionInfo.h"
 #include "binder/IServiceManager.h"
 #include "netdutils/InternetAddresses.h"
 #include "netdutils/Stopwatch.h"
@@ -102,11 +108,10 @@ using android::base::StartsWith;
 using android::base::StringPrintf;
 using android::base::Trim;
 using android::base::unique_fd;
+using android::binder::Status;
 using android::net::INetd;
 using android::net::InterfaceConfigurationParcel;
 using android::net::InterfaceController;
-using android::net::LOCAL_EXCLUSION_ROUTES_V4;
-using android::net::LOCAL_EXCLUSION_ROUTES_V6;
 using android::net::MarkMaskParcel;
 using android::net::NativeNetworkConfig;
 using android::net::NativeNetworkType;
@@ -131,6 +136,11 @@ using android::net::TetherStatsParcel;
 using android::net::TunInterface;
 using android::net::UidRangeParcel;
 using android::net::UidRanges;
+using android::net::mdns::aidl::DiscoveryInfo;
+using android::net::mdns::aidl::GetAddressInfo;
+using android::net::mdns::aidl::IMDns;
+using android::net::mdns::aidl::RegistrationInfo;
+using android::net::mdns::aidl::ResolutionInfo;
 using android::net::netd::aidl::NativeUidRangeConfig;
 using android::netdutils::getIfaceNames;
 using android::netdutils::IPAddress;
@@ -1444,16 +1454,6 @@ void expectNetworkRouteExistsWithMtu(const char* ipVersion, const std::string& i
             << "] in table " << table;
 }
 
-bool ipRouteExists(const char* ipType, std::string& ipRoute, const std::string& tableName) {
-    std::vector<std::string> routes = listIpRoutes(ipType, tableName.c_str());
-    for (const auto& route : routes) {
-        if (route.find(ipRoute) != std::string::npos) {
-            return true;
-        }
-    }
-    return false;
-}
-
 void expectVpnLocalExclusionRuleExists(const std::string& ifName, bool expectExists) {
     std::string tableName = std::string(ifName + "_local");
     // Check if rule exists
@@ -1624,84 +1624,6 @@ void expectProcessDoesNotExist(const std::string& processName) {
 }
 
 }  // namespace
-
-TEST_F(NetdBinderTest, ClatdStartStop) {
-    binder::Status status;
-
-    const std::string clatdName = StringPrintf("clatd-%s", sTun.name().c_str());
-    std::string clatAddress;
-    std::string nat64Prefix = "2001:db8:cafe:f00d:1:2::/96";
-
-    // Can't start clatd on an interface that's not part of any network...
-    status = mNetd->clatdStart(sTun.name(), nat64Prefix, &clatAddress);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(ENODEV, status.serviceSpecificErrorCode());
-
-    // ... so create a test physical network and add our tun to it.
-    const auto& config = makeNativeNetworkConfig(TEST_NETID1, NativeNetworkType::PHYSICAL,
-                                                 INetd::PERMISSION_NONE, false, false);
-    EXPECT_TRUE(mNetd->networkCreate(config).isOk());
-    EXPECT_TRUE(mNetd->networkAddInterface(TEST_NETID1, sTun.name()).isOk());
-
-    // Prefix must be 96 bits long.
-    status = mNetd->clatdStart(sTun.name(), "2001:db8:cafe:f00d::/64", &clatAddress);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(EINVAL, status.serviceSpecificErrorCode());
-
-    // Can't start clatd unless there's a default route...
-    status = mNetd->clatdStart(sTun.name(), nat64Prefix, &clatAddress);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(EADDRNOTAVAIL, status.serviceSpecificErrorCode());
-
-    // so add a default route.
-    EXPECT_TRUE(mNetd->networkAddRoute(TEST_NETID1, sTun.name(), "::/0", "").isOk());
-
-    // Can't start clatd unless there's a global address...
-    status = mNetd->clatdStart(sTun.name(), nat64Prefix, &clatAddress);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(EADDRNOTAVAIL, status.serviceSpecificErrorCode());
-
-    // ... so add a global address.
-    const std::string v6 = "2001:db8:1:2:f076:ae99:124e:aa99";
-    EXPECT_EQ(0, sTun.addAddress(v6.c_str(), 64));
-
-    // Now expect clatd to start successfully.
-    status = mNetd->clatdStart(sTun.name(), nat64Prefix, &clatAddress);
-    EXPECT_TRUE(status.isOk());
-    EXPECT_EQ(0, status.serviceSpecificErrorCode());
-
-    // Add clat interface and verify the expected rule exists
-    const std::string clatIface = "v4-" + sTun.name();
-    EXPECT_TRUE(mNetd->networkAddInterface(TEST_NETID1, clatIface).isOk());
-    expectVpnLocalExclusionRuleExists(sTun.name(), true);
-
-    // Starting it again returns EBUSY.
-    status = mNetd->clatdStart(sTun.name(), nat64Prefix, &clatAddress);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(EBUSY, status.serviceSpecificErrorCode());
-
-    expectProcessExists(clatdName);
-
-    // Expect clatd to stop successfully.
-    status = mNetd->clatdStop(sTun.name());
-    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
-    expectProcessDoesNotExist(clatdName);
-
-    // Stopping a clatd that doesn't exist returns ENODEV.
-    status = mNetd->clatdStop(sTun.name());
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(ENODEV, status.serviceSpecificErrorCode());
-    expectProcessDoesNotExist(clatdName);
-
-    // Clean up.
-    EXPECT_TRUE(mNetd->networkRemoveRoute(TEST_NETID1, sTun.name(), "::/0", "").isOk());
-    EXPECT_EQ(0, ifc_del_address(sTun.name().c_str(), v6.c_str(), 64));
-    EXPECT_TRUE(mNetd->networkDestroy(TEST_NETID1).isOk());
-
-    // Corresponding rules should be removed.
-    expectVpnLocalExclusionRuleExists(sTun.name(), false);
-    expectVpnLocalExclusionRuleExists(clatIface, false);
-}
 
 namespace {
 
@@ -3540,30 +3462,6 @@ void expectVpnFallthroughRuleExists(const std::string& ifName, int vpnNetId) {
     }
 }
 
-void expectVpnLocalExclusionRouteExists(const std::string& ifName) {
-    std::string tableName = std::string(ifName + "_local");
-    // Check if routes exist
-    for (size_t i = 0; i < ARRAY_SIZE(LOCAL_EXCLUSION_ROUTES_V4); ++i) {
-        const auto& dst = LOCAL_EXCLUSION_ROUTES_V4[i];
-        std::string vpnLocalExclusionRoute =
-                StringPrintf("%s dev %s proto static scope link", dst, ifName.c_str());
-        EXPECT_TRUE(ipRouteExists(IP_RULE_V4, vpnLocalExclusionRoute, tableName));
-    }
-    // expect no other rule
-    std::vector<std::string> routes = listIpRoutes(IP_RULE_V4, tableName.c_str());
-    EXPECT_EQ(routes.size(), ARRAY_SIZE(LOCAL_EXCLUSION_ROUTES_V4));
-
-    for (size_t i = 0; i < ARRAY_SIZE(LOCAL_EXCLUSION_ROUTES_V6); ++i) {
-        const auto& dst = LOCAL_EXCLUSION_ROUTES_V6[i];
-        std::string vpnLocalExclusionRoute =
-                StringPrintf("%s dev %s proto static", dst, ifName.c_str());
-        EXPECT_TRUE(ipRouteExists(IP_RULE_V6, vpnLocalExclusionRoute, tableName));
-    }
-    // expect no other rule
-    routes = listIpRoutes(IP_RULE_V6, tableName.c_str());
-    EXPECT_EQ(routes.size(), ARRAY_SIZE(LOCAL_EXCLUSION_ROUTES_V6));
-}
-
 void expectVpnFallthroughWorks(android::net::INetd* netdService, bool bypassable, uid_t uid,
                                const TunInterface& fallthroughNetwork,
                                const TunInterface& vpnNetwork, int vpnNetId = TEST_NETID2,
@@ -3603,8 +3501,6 @@ void expectVpnFallthroughWorks(android::net::INetd* netdService, bool bypassable
 
     // Check if local exclusion rule exists
     expectVpnLocalExclusionRuleExists(fallthroughNetwork.name(), true);
-    // Check if local exclusion route exists
-    expectVpnLocalExclusionRouteExists(fallthroughNetwork.name());
 
     // Expect fallthrough to default network
     // The fwmark differs depending on whether the VPN is bypassable or not.
@@ -3721,275 +3617,6 @@ TEST_F(NetdBinderTest, GetFwmarkForNetwork) {
     EXPECT_TRUE(mNetd->networkDestroy(TEST_NETID1).isOk());
 }
 
-namespace {
-
-TetherOffloadRuleParcel makeTetherOffloadRule(int inputInterfaceIndex, int outputInterfaceIndex,
-                                              const std::vector<uint8_t>& destination,
-                                              int prefixLength,
-                                              const std::vector<uint8_t>& srcL2Address,
-                                              const std::vector<uint8_t>& dstL2Address, int pmtu) {
-    android::net::TetherOffloadRuleParcel parcel;
-    parcel.inputInterfaceIndex = inputInterfaceIndex;
-    parcel.outputInterfaceIndex = outputInterfaceIndex;
-    parcel.destination = destination;
-    parcel.prefixLength = prefixLength;
-    parcel.srcL2Address = srcL2Address;
-    parcel.dstL2Address = dstL2Address;
-    parcel.pmtu = pmtu;
-    return parcel;
-}
-
-}  // namespace
-
-// TODO: probably remove the test because TetherOffload* binder calls are deprecated.
-TEST_F(NetdBinderTest, DISABLED_TetherOffloadRule) {
-    // TODO: Perhaps verify invalid interface index once the netd handle the error in methods.
-    constexpr uint32_t kIfaceInt = 101;
-    constexpr uint32_t kIfaceExt = 102;
-    constexpr uint32_t kIfaceNonExistent = 103;
-
-    const std::vector<uint8_t> kAddr6 = {0x20, 0x01, 0x0d, 0xb8, 0xca, 0xfe, 0x00, 0x00,
-                                         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x88};
-    const std::vector<uint8_t> kSrcMac = {0x00, 0x00, 0x00, 0x00, 0x00, 0x0a};
-    const std::vector<uint8_t> kDstMac = {0x00, 0x00, 0x00, 0x00, 0x00, 0x0b};
-
-    const std::vector<uint8_t> kInvalidAddr4 = {0xac, 0x0a, 0x0d, 0xb8};  // should be IPv6 address
-    const std::vector<uint8_t> kInvalidMac = {0xde, 0xad, 0xbe, 0xef};    // should be 6-byte length
-
-    // Invalid IP address, add rule
-    TetherOffloadRuleParcel rule = makeTetherOffloadRule(
-            kIfaceExt, kIfaceInt, kInvalidAddr4 /*bad*/, 128, kSrcMac, kDstMac, 1500);
-    auto status = mNetd->tetherOffloadRuleAdd(rule);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(EAFNOSUPPORT, status.serviceSpecificErrorCode());
-
-    // Invalid source L2 address, add rule
-    rule = makeTetherOffloadRule(kIfaceExt, kIfaceInt, kAddr6, 128, kInvalidMac /*bad*/, kDstMac,
-                                 1500);
-    status = mNetd->tetherOffloadRuleAdd(rule);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(ENXIO, status.serviceSpecificErrorCode());
-
-    // Invalid destination L2 address, add rule
-    rule = makeTetherOffloadRule(kIfaceExt, kIfaceInt, kAddr6, 128, kSrcMac, kInvalidMac /*bad*/,
-                                 1500);
-    status = mNetd->tetherOffloadRuleAdd(rule);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(ENXIO, status.serviceSpecificErrorCode());
-
-    // Invalid IP address, remove rule
-    rule = makeTetherOffloadRule(kIfaceExt, kIfaceInt, kInvalidAddr4 /*bad*/, 128, kSrcMac, kDstMac,
-                                 1500);
-    status = mNetd->tetherOffloadRuleRemove(rule);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(EAFNOSUPPORT, status.serviceSpecificErrorCode());
-
-    // Invalid prefix length
-    rule = makeTetherOffloadRule(kIfaceExt, kIfaceInt, kAddr6, 64 /*bad*/, kSrcMac, kDstMac, 1500);
-    status = mNetd->tetherOffloadRuleAdd(rule);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(EINVAL, status.serviceSpecificErrorCode());
-    status = mNetd->tetherOffloadRuleRemove(rule);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(EINVAL, status.serviceSpecificErrorCode());
-
-    // Invalid interface index
-    rule = makeTetherOffloadRule(kIfaceExt, 0, kAddr6, 128, kSrcMac, kDstMac, 1500);
-    status = mNetd->tetherOffloadRuleAdd(rule);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(ENODEV, status.serviceSpecificErrorCode());
-    rule = makeTetherOffloadRule(0, kIfaceInt, kAddr6, 64, kSrcMac, kDstMac, 1500);
-    status = mNetd->tetherOffloadRuleRemove(rule);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(ENODEV, status.serviceSpecificErrorCode());
-
-    // Invalid pmtu (too low)
-    rule = makeTetherOffloadRule(kIfaceExt, kIfaceInt, kAddr6, 128, kSrcMac, kDstMac, 1279);
-    status = mNetd->tetherOffloadRuleAdd(rule);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(EINVAL, status.serviceSpecificErrorCode());
-
-    // Invalid pmtu (too high)
-    rule = makeTetherOffloadRule(kIfaceExt, kIfaceInt, kAddr6, 128, kSrcMac, kDstMac, 65536);
-    status = mNetd->tetherOffloadRuleAdd(rule);
-    EXPECT_FALSE(status.isOk());
-    EXPECT_EQ(EINVAL, status.serviceSpecificErrorCode());
-
-    // Remove non existent rule. Expect that silently return success if the rule did not exist.
-    rule = makeTetherOffloadRule(kIfaceNonExistent, kIfaceInt, kAddr6, 128, kSrcMac, kDstMac, 1500);
-    EXPECT_TRUE(mNetd->tetherOffloadRuleRemove(rule).isOk());
-
-    // Add and remove rule normally.
-    rule = makeTetherOffloadRule(kIfaceExt, kIfaceInt, kAddr6, 128, kSrcMac, kDstMac, 1500);
-    EXPECT_TRUE(mNetd->tetherOffloadRuleAdd(rule).isOk());
-    EXPECT_TRUE(mNetd->tetherOffloadRuleRemove(rule).isOk());
-}
-
-static bool expectPacket(int fd, uint8_t* ipPacket, ssize_t ipLen) {
-    constexpr bool kDebug = false;
-
-    uint8_t buf[ETHER_HDR_LEN + 1500];
-
-    // Wait a bit to ensure that the packet we're interested in has arrived.
-    // TODO: speed this up.
-    usleep(100 * 1000);
-
-    ssize_t bytesRead;
-    ssize_t expectedLen = ipLen + ETHER_HDR_LEN;
-    while ((bytesRead = read(fd, buf, sizeof(buf))) >= 0) {
-        if (kDebug) {
-            std::cerr << fmt::format(
-                    "Expected: {:02x}\n  Actual: {:02x}\n",
-                    fmt::join(ipPacket, ipPacket + ipLen, " "),
-                    fmt::join(buf + ETHER_HDR_LEN, buf + ETHER_HDR_LEN + ipLen, " "));
-        }
-
-        if (bytesRead != expectedLen) {
-            continue;
-        }
-
-        if (!memcmp(ipPacket, buf + ETHER_HDR_LEN, ipLen)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static bool tcQdiscExists(const std::string& interface) {
-    std::string command = StringPrintf("tc qdisc show dev %s", interface.c_str());
-    std::vector<std::string> lines = runCommand(command);
-    for (const auto& line : lines) {
-        if (StartsWith(line, "qdisc clsact ffff:")) return true;
-    }
-    return false;
-}
-
-static bool tcFilterExists(const std::string& interface) {
-    std::string command = StringPrintf("tc filter show dev %s ingress", interface.c_str());
-    std::vector<std::string> lines = runCommand(command);
-    const std::basic_regex regex("^filter .* bpf .* prog_offload_schedcls_tether_.*$");
-    for (const auto& line : lines) {
-        if (std::regex_match(Trim(line), regex)) return true;
-    }
-    return false;
-}
-
-// TODO: probably remove the test because TetherOffload* binder calls are deprecated.
-TEST_F(NetdBinderTest, DISABLED_TetherOffloadForwarding) {
-    SKIP_IF_EXTENDED_BPF_NOT_SUPPORTED;
-
-    constexpr const char* kDownstreamPrefix = "2001:db8:2::/64";
-
-    // 1500-byte packet.
-    constexpr unsigned short kPayloadLen = 1500 - sizeof(ipv6hdr);
-    struct packet {
-        ipv6hdr hdr;
-        char data[kPayloadLen];
-    } __attribute__((packed)) pkt = {
-            .hdr =
-                    {
-                            .version = 6,
-                            .payload_len = htons(kPayloadLen),
-                            .nexthdr = 59,  // No next header.
-                            .hop_limit = 64,
-                            .saddr = {{{0x20, 0x01, 0x0d, 0xb8, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
-                                        0x00, 0x00, 0x00, 0x00, 0x00, 0x01}}},
-                            .daddr = {{{0x20, 0x01, 0x0d, 0xb8, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00,
-                                        0x00, 0x00, 0x0f, 0x00, 0xca, 0xfe}}},
-                    },
-    };
-    ASSERT_EQ(1500U, sizeof(pkt));
-
-    // Use one of the test's tun interfaces as upstream.
-    // It must be part of a network or it will not have the clsact attached.
-    const auto& config = makeNativeNetworkConfig(TEST_NETID1, NativeNetworkType::PHYSICAL,
-                                                 INetd::PERMISSION_NONE, false, false);
-    EXPECT_TRUE(mNetd->networkCreate(config).isOk());
-    EXPECT_TRUE(mNetd->networkAddInterface(TEST_NETID1, sTun.name()).isOk());
-    int fd1 = sTun.getFdForTesting();
-    EXPECT_TRUE(tcQdiscExists(sTun.name()));
-
-    // Create our own tap as a downstream.
-    TunInterface tap;
-    ASSERT_EQ(0, tap.init(true /* isTap */));
-    ASSERT_LE(tap.name().size(), static_cast<size_t>(IFNAMSIZ));
-    int fd2 = tap.getFdForTesting();
-
-    // Set it to nonblocking so that expectPacket can work.
-    int flags = fcntl(fd2, F_GETFL, 0);
-    fcntl(fd2, F_SETFL, flags | O_NONBLOCK);
-
-    // Downstream interface setup. Add to local network, add directly-connected route, etc.
-    binder::Status status = mNetd->networkAddInterface(INetd::LOCAL_NET_ID, tap.name());
-    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
-    status = mNetd->tetherInterfaceAdd(tap.name());
-    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
-    expectTetherInterfaceConfigureForIPv6Router(tap.name());
-    EXPECT_TRUE(tcQdiscExists(tap.name()));
-
-    // Can't easily use INetd::NEXTHOP_NONE because it is a String16 constant. Use "" instead.
-    status = mNetd->networkAddRoute(INetd::LOCAL_NET_ID, tap.name(), kDownstreamPrefix, "");
-    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
-
-    // Set up forwarding. All methods take intIface first and extIface second.
-    status = mNetd->tetherAddForward(tap.name(), sTun.name());
-    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
-    status = mNetd->ipfwdAddInterfaceForward(tap.name(), sTun.name());
-    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
-    EXPECT_TRUE(tcFilterExists(sTun.name()));
-
-    std::vector<uint8_t> kDummyMac = {02, 00, 00, 00, 00, 00};
-    uint8_t* daddr = reinterpret_cast<uint8_t*>(&pkt.hdr.daddr);
-    std::vector<uint8_t> dstAddr(daddr, daddr + sizeof(pkt.hdr.daddr));
-
-    TetherOffloadRuleParcel rule = makeTetherOffloadRule(sTun.ifindex(), tap.ifindex(), dstAddr,
-                                                         128, kDummyMac, kDummyMac, sizeof(pkt));
-    status = mNetd->tetherOffloadRuleAdd(rule);
-    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
-
-    // Set data limit to one byte less than two packets.
-    // If you get rid of the '- 1' then the second packet will get forwarded
-    // and the EXPECT_FALSE(expectPacket(...)) a dozen lines down will fail.
-    status = mNetd->tetherOffloadSetInterfaceQuota(sTun.ifindex(), sizeof(pkt) * 2 - 1);
-    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
-
-    // Receive a packet on sTun.
-    EXPECT_EQ((ssize_t)sizeof(pkt), write(fd1, &pkt, sizeof(pkt)));
-
-    // Expect a packet identical to pkt, except with a TTL of 63.
-    struct packet pkt2 = pkt;
-    ASSERT_EQ(1500U, sizeof(pkt2));
-    pkt2.hdr.hop_limit = pkt.hdr.hop_limit - 1;
-    EXPECT_TRUE(expectPacket(fd2, (uint8_t*)&pkt2, sizeof(pkt2)));
-
-    // Receive a second packet on sTun.
-    EXPECT_EQ((ssize_t)sizeof(pkt), write(fd1, &pkt, sizeof(pkt)));
-
-    // Should fail to forward due to quota limit.
-    EXPECT_FALSE(expectPacket(fd2, (uint8_t*)&pkt2, sizeof(pkt2)));
-
-    // Clean up.
-    EXPECT_TRUE(mNetd->tetherOffloadRuleRemove(rule).isOk());
-
-    TetherStatsParcel tetherStats;
-    EXPECT_TRUE(mNetd->tetherOffloadGetAndClearStats(sTun.ifindex(), &tetherStats).isOk());
-    EXPECT_EQ("", tetherStats.iface);
-    EXPECT_EQ(static_cast<int64_t>(sizeof(pkt)), tetherStats.rxBytes);
-    EXPECT_EQ(1, tetherStats.rxPackets);
-    EXPECT_EQ(0, tetherStats.txBytes);
-    EXPECT_EQ(0, tetherStats.txPackets);
-    EXPECT_EQ(sTun.ifindex(), tetherStats.ifIndex);
-
-    EXPECT_TRUE(mNetd->ipfwdRemoveInterfaceForward(tap.name(), sTun.name()).isOk());
-    EXPECT_TRUE(mNetd->tetherRemoveForward(tap.name(), sTun.name()).isOk());
-    EXPECT_TRUE(mNetd->networkRemoveRoute(INetd::LOCAL_NET_ID, tap.name(), kDownstreamPrefix, "")
-                        .isOk());
-    EXPECT_TRUE(mNetd->tetherInterfaceRemove(tap.name()).isOk());
-    EXPECT_TRUE(mNetd->networkRemoveInterface(INetd::LOCAL_NET_ID, tap.name()).isOk());
-    EXPECT_TRUE(mNetd->networkRemoveInterface(TEST_NETID1, sTun.name()).isOk());
-}
-
 TEST_F(NetdBinderTest, TestServiceDump) {
     sp<IBinder> binder = INetd::asBinder(mNetd);
     ASSERT_NE(nullptr, binder);
@@ -4069,40 +3696,6 @@ TEST_F(NetdBinderTest, TestServiceDump) {
             }
         }
     }
-}
-
-TEST_F(NetdBinderTest, DeprecatedTetherOffloadRuleAdd) {
-    TetherOffloadRuleParcel emptyRule;
-    auto status = mNetd->tetherOffloadRuleAdd(emptyRule);
-    ASSERT_FALSE(status.isOk());
-    ASSERT_EQ(status.exceptionCode(), binder::Status::EX_UNSUPPORTED_OPERATION);
-}
-
-TEST_F(NetdBinderTest, DeprecatedTetherOffloadRuleRemove) {
-    TetherOffloadRuleParcel emptyRule;
-    auto status = mNetd->tetherOffloadRuleRemove(emptyRule);
-    ASSERT_FALSE(status.isOk());
-    ASSERT_EQ(status.exceptionCode(), binder::Status::EX_UNSUPPORTED_OPERATION);
-}
-
-TEST_F(NetdBinderTest, DeprecatedTetherOffloadGetStats) {
-    std::vector<TetherStatsParcel> tetherStatsList;
-    auto status = mNetd->tetherOffloadGetStats(&tetherStatsList);
-    ASSERT_FALSE(status.isOk());
-    ASSERT_EQ(status.exceptionCode(), binder::Status::EX_UNSUPPORTED_OPERATION);
-}
-
-TEST_F(NetdBinderTest, DeprecatedTetherOffloadSetInterfaceQuota) {
-    auto status = mNetd->tetherOffloadSetInterfaceQuota(0 /* ifIndex */, 0 /* quotaBytes */);
-    ASSERT_FALSE(status.isOk());
-    ASSERT_EQ(status.exceptionCode(), binder::Status::EX_UNSUPPORTED_OPERATION);
-}
-
-TEST_F(NetdBinderTest, DeprecatedTetherOffloadGetAndClearStats) {
-    TetherStatsParcel tetherStats;
-    auto status = mNetd->tetherOffloadGetAndClearStats(0 /* ifIndex */, &tetherStats);
-    ASSERT_FALSE(status.isOk());
-    ASSERT_EQ(status.exceptionCode(), binder::Status::EX_UNSUPPORTED_OPERATION);
 }
 
 namespace {
@@ -5043,4 +4636,61 @@ TEST_F(PerAppNetworkPermissionsTest, PermissionOnlyAffectsUid) {
         EXPECT_EQ(bindSocketToNetwork(sock, TEST_NETID2, true /*explicitlySelected*/), 0);
         EXPECT_EQ(connect(sock, (sockaddr*)&TEST_SOCKADDR_IN6, sizeof(TEST_SOCKADDR_IN6)), -1);
     }
+}
+
+class MDnsBinderTest : public ::testing::Test {
+  public:
+    MDnsBinderTest() {
+        sp<IServiceManager> sm = android::defaultServiceManager();
+        sp<IBinder> binder = sm->getService(String16("mdns"));
+        if (binder != nullptr) {
+            mMDns = android::interface_cast<IMDns>(binder);
+        }
+    }
+
+    void SetUp() override { ASSERT_NE(nullptr, mMDns.get()); }
+
+    void TearDown() override {}
+
+  protected:
+    sp<IMDns> mMDns;
+};
+
+class TestMDnsListener : public android::net::mdns::aidl::BnMDnsEventListener {
+  public:
+    Status onServiceRegistrationStatus(const RegistrationInfo& /* status */) override {
+        return Status::ok();
+    }
+    Status onServiceDiscoveryStatus(const DiscoveryInfo& /* status */) override {
+        return Status::ok();
+    }
+    Status onServiceResolutionStatus(const ResolutionInfo& /* status */) override {
+        return Status::ok();
+    }
+    Status onGettingServiceAddressStatus(const GetAddressInfo& /* status */) override {
+        return Status::ok();
+    }
+};
+
+TEST_F(MDnsBinderTest, EventListenerTest) {
+    // Register a null listener.
+    binder::Status status = mMDns->registerEventListener(nullptr);
+    EXPECT_FALSE(status.isOk());
+
+    // Unregister a null listener.
+    status = mMDns->unregisterEventListener(nullptr);
+    EXPECT_FALSE(status.isOk());
+
+    // Register the test listener.
+    android::sp<TestMDnsListener> testListener = new TestMDnsListener();
+    status = mMDns->registerEventListener(testListener);
+    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
+
+    // Register the duplicated listener
+    status = mMDns->registerEventListener(testListener);
+    EXPECT_FALSE(status.isOk());
+
+    // Unregister the test listener
+    status = mMDns->unregisterEventListener(testListener);
+    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
 }

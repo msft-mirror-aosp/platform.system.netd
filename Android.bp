@@ -20,7 +20,6 @@ cc_library_headers {
     export_include_dirs: ["include"],
     apex_available: [
         "//apex_available:platform",
-        "com.android.tethering",
     ],
 }
 
@@ -75,14 +74,13 @@ cc_defaults {
         "-performance-noexcept-move-constructor",
         "-performance-unnecessary-value-param",
     ],
-    tidy_flags: [
-        "-warnings-as-errors="
-        + "android-*,"
-        + "bugprone-*,"
-        + "cert-*,"
-        + "clang-analyzer-security*,"
-        + "google-*,"
-        + "misc-*,"
-        + "performance-*"
+    tidy_checks_as_errors: [
+        "android-*",
+        "bugprone-*",
+        "cert-*",
+        "clang-analyzer-security*",
+        "google-*",
+        "misc-*",
+        "performance-*",
     ],
 }
