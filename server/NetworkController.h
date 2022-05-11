@@ -107,7 +107,8 @@ public:
 
     [[nodiscard]] int createPhysicalNetwork(unsigned netId, Permission permission);
     [[nodiscard]] int createPhysicalOemNetwork(Permission permission, unsigned* netId);
-    [[nodiscard]] int createVirtualNetwork(unsigned netId, bool secure, NativeVpnType vpnType);
+    [[nodiscard]] int createVirtualNetwork(unsigned netId, bool secure, NativeVpnType vpnType,
+                                           bool excludeLocalRoutes);
     [[nodiscard]] int destroyNetwork(unsigned netId);
 
     [[nodiscard]] int addInterfaceToNetwork(unsigned netId, const char* interface);
@@ -119,8 +120,10 @@ public:
     [[nodiscard]] int setPermissionForNetworks(Permission permission,
                                                const std::vector<unsigned>& netIds);
 
-    [[nodiscard]] int addUsersToNetwork(unsigned netId, const UidRanges& uidRanges);
-    [[nodiscard]] int removeUsersFromNetwork(unsigned netId, const UidRanges& uidRanges);
+    [[nodiscard]] int addUsersToNetwork(unsigned netId, const UidRanges& uidRanges,
+                                        int32_t subPriority);
+    [[nodiscard]] int removeUsersFromNetwork(unsigned netId, const UidRanges& uidRanges,
+                                             int32_t subPriority);
 
     // |nexthop| can be NULL (to indicate a directly-connected route), "unreachable" (to indicate a
     // route that's blocked), "throw" (to indicate the lack of a match), or a regular IP address.
