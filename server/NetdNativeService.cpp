@@ -67,48 +67,6 @@ namespace net {
 namespace {
 const char OPT_SHORT[] = "--short";
 
-// The input permissions should be equivalent that this function would return ok if any of them is
-// granted.
-binder::Status checkAnyPermission(const std::vector<const char*>& permissions) {
-    pid_t pid = IPCThreadState::self()->getCallingPid();
-    uid_t uid = IPCThreadState::self()->getCallingUid();
-
-    // TODO: Do the pure permission check in this function. Have another method
-    // (e.g. checkNetworkStackPermission) to wrap AID_SYSTEM and
-    // AID_NETWORK_STACK uid check.
-    // If the caller is the system UID, don't check permissions.
-    // Otherwise, if the system server's binder thread pool is full, and all the threads are
-    // blocked on a thread that's waiting for us to complete, we deadlock. http://b/69389492
-    //
-    // From a security perspective, there is currently no difference, because:
-    // 1. The system server has the NETWORK_STACK permission, which grants access to all the
-    //    IPCs in this file.
-    // 2. AID_SYSTEM always has all permissions. See ActivityManager#checkComponentPermission.
-    if (uid == AID_SYSTEM) {
-        return binder::Status::ok();
-    }
-    // AID_NETWORK_STACK own MAINLINE_NETWORK_STACK permission, don't IPC to system server to check
-    // MAINLINE_NETWORK_STACK permission. Cross-process(netd, networkstack and system server)
-    // deadlock: http://b/149766727
-    if (uid == AID_NETWORK_STACK) {
-        for (const char* permission : permissions) {
-            if (std::strcmp(permission, PERM_MAINLINE_NETWORK_STACK) == 0) {
-                return binder::Status::ok();
-            }
-        }
-    }
-
-    for (const char* permission : permissions) {
-        if (checkPermission(String16(permission), pid, uid)) {
-            return binder::Status::ok();
-        }
-    }
-
-    auto err = StringPrintf("UID %d / PID %d does not have any of the following permissions: %s",
-                            uid, pid, android::base::Join(permissions, ',').c_str());
-    return binder::Status::fromExceptionCode(binder::Status::EX_SECURITY, err.c_str());
-}
-
 #define ENFORCE_ANY_PERMISSION(...)                                \
     do {                                                           \
         binder::Status status = checkAnyPermission({__VA_ARGS__}); \
@@ -151,13 +109,6 @@ binder::Status asBinderStatus(const base::Result<T> result) {
 
     return binder::Status::fromServiceSpecificError(result.error().code(),
                                                     result.error().message().c_str());
-}
-
-inline binder::Status statusFromErrcode(int ret) {
-    if (ret) {
-        return binder::Status::fromServiceSpecificError(-ret, strerror(-ret));
-    }
-    return binder::Status::ok();
 }
 
 bool contains(const Vector<String16>& words, const String16& word) {
@@ -216,9 +167,6 @@ status_t NetdNativeService::dump(int fd, const Vector<String16> &args) {
     dw.blankline();
 
     gCtls->xfrmCtrl.dump(dw);
-    dw.blankline();
-
-    gCtls->clatdCtrl.dump(dw);
     dw.blankline();
 
     gCtls->tetherCtrl.dump(dw);
@@ -802,17 +750,20 @@ binder::Status NetdNativeService::strictUidCleartextPenalty(int32_t uid, int32_t
     return statusFromErrcode(res);
 }
 
-binder::Status NetdNativeService::clatdStart(const std::string& ifName,
-                                             const std::string& nat64Prefix, std::string* v6Addr) {
+// TODO: remark @deprecated in INetd.aidl.
+binder::Status NetdNativeService::clatdStart(const std::string& /* ifName */,
+                                             const std::string& /* nat64Prefix */,
+                                             std::string* /* v6Addr */) {
     ENFORCE_ANY_PERMISSION(PERM_NETWORK_STACK, PERM_MAINLINE_NETWORK_STACK);
-    int res = gCtls->clatdCtrl.startClatd(ifName.c_str(), nat64Prefix, v6Addr);
-    return statusFromErrcode(res);
+    // deprecated
+    return binder::Status::fromExceptionCode(binder::Status::EX_UNSUPPORTED_OPERATION);
 }
 
-binder::Status NetdNativeService::clatdStop(const std::string& ifName) {
+// TODO: remark @deprecated in INetd.aidl.
+binder::Status NetdNativeService::clatdStop(const std::string& /* ifName */) {
     ENFORCE_ANY_PERMISSION(PERM_NETWORK_STACK, PERM_MAINLINE_NETWORK_STACK);
-    int res = gCtls->clatdCtrl.stopClatd(ifName.c_str());
-    return statusFromErrcode(res);
+    // deprecated
+    return binder::Status::fromExceptionCode(binder::Status::EX_UNSUPPORTED_OPERATION);
 }
 
 binder::Status NetdNativeService::ipfwdEnabled(bool* status) {
