@@ -18,6 +18,7 @@
 #define _CONTROLLERS_H__
 
 #include "BandwidthController.h"
+#include "ClatdController.h"
 #include "EventReporter.h"
 #include "FirewallController.h"
 #include "IdletimerController.h"
@@ -28,6 +29,7 @@
 #include "StrictController.h"
 #include "TcpSocketMonitor.h"
 #include "TetherController.h"
+#include "TrafficController.h"
 #include "WakeupController.h"
 #include "XfrmController.h"
 #include "netdutils/Log.h"
@@ -45,11 +47,13 @@ class Controllers {
     BandwidthController bandwidthCtrl;
     IdletimerController idletimerCtrl;
     FirewallController firewallCtrl;
+    ClatdController clatdCtrl;
     StrictController strictCtrl;
     EventReporter eventReporter;
     IptablesRestoreController iptablesRestoreCtrl;
     WakeupController wakeupCtrl;
     XfrmController xfrmCtrl;
+    TrafficController trafficCtrl;
     TcpSocketMonitor tcpSocketMonitor;
 
     void init();
