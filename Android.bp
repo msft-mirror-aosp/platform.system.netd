@@ -33,6 +33,17 @@ cc_library_headers {
     min_sdk_version: "29",
 }
 
+cc_library_headers {
+    name: "netd_mainline_headers",
+    export_include_dirs: ["include/mainline"],
+    apex_available: [
+        "//apex_available:platform",
+        "com.android.tethering",
+    ],
+    sdk_version: "29",
+    min_sdk_version: "29",
+}
+
 cc_defaults {
     name: "netd_defaults",
     cflags: [
