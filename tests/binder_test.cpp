@@ -54,11 +54,11 @@
 #include <binder/IPCThreadState.h>
 #include <bpf/BpfMap.h>
 #include <bpf/BpfUtils.h>
-#include <bpf_shared.h>
 #include <com/android/internal/net/BnOemNetdUnsolicitedEventListener.h>
 #include <com/android/internal/net/IOemNetd.h>
 #include <cutils/multiuser.h>
 #include <gtest/gtest.h>
+#include <netdutils/NetNativeTestBase.h>
 #include <netutils/ifc.h>
 #include <utils/Errors.h>
 #include "Fwmark.h"
@@ -129,6 +129,7 @@ using android::net::RULE_PRIORITY_UID_DEFAULT_NETWORK;
 using android::net::RULE_PRIORITY_UID_DEFAULT_UNREACHABLE;
 using android::net::RULE_PRIORITY_UID_EXPLICIT_NETWORK;
 using android::net::RULE_PRIORITY_UID_IMPLICIT_NETWORK;
+using android::net::RULE_PRIORITY_UID_LOCAL_ROUTES;
 using android::net::RULE_PRIORITY_VPN_FALLTHROUGH;
 using android::net::SockDiag;
 using android::net::TetherOffloadRuleParcel;
@@ -175,7 +176,7 @@ static const in6_addr V6_ADDR = {
         {// 2001:db8:cafe::8888
          .u6_addr8 = {0x20, 0x01, 0x0d, 0xb8, 0xca, 0xfe, 0, 0, 0, 0, 0, 0, 0, 0, 0x88, 0x88}}};
 
-class NetdBinderTest : public ::testing::Test {
+class NetdBinderTest : public NetNativeTestBase {
   public:
     NetdBinderTest() {
         sp<IServiceManager> sm = android::defaultServiceManager();
@@ -225,7 +226,8 @@ class NetdBinderTest : public ::testing::Test {
                                      unique_fd* acceptedSocket);
 
     void createVpnNetworkWithUid(bool secure, uid_t uid, int vpnNetId = TEST_NETID2,
-                                 int fallthroughNetId = TEST_NETID1);
+                                 int fallthroughNetId = TEST_NETID1,
+                                 int nonDefaultNetId = TEST_NETID3);
 
     void createAndSetDefaultNetwork(int netId, const std::string& interface,
                                     int permission = INetd::PERMISSION_NONE);
@@ -1232,7 +1234,7 @@ TEST_F(NetdBinderTest, TetherGetStats) {
     for (const auto& path : { IPTABLES_PATH, IP6TABLES_PATH }) {
         delTetherCounterValues(path, intIface1, extIface1);
         delTetherCounterValues(path, intIface2, extIface2);
-        if (path == IP6TABLES_PATH) {
+        if (strcmp(path, IP6TABLES_PATH) == 0) {
             delTetherCounterValues(path, intIface3, extIface2);
         }
     }
@@ -1624,6 +1626,121 @@ void expectProcessDoesNotExist(const std::string& processName) {
 }
 
 }  // namespace
+
+TEST_F(NetdBinderTest, NetworkAddRemoveRouteToLocalExcludeTable) {
+    static const struct {
+        const char* ipVersion;
+        const char* testDest;
+        const char* testNextHop;
+        const bool expectInLocalTable;
+    } kTestData[] = {{IP_RULE_V6, "::/0", "fe80::", false},
+                     {IP_RULE_V6, "::/0", "", false},
+                     {IP_RULE_V6, "2001:db8:cafe::/64", "fe80::", false},
+                     {IP_RULE_V6, "fe80::/64", "", true},
+                     {IP_RULE_V6, "2001:db8:cafe::/48", "", true},
+                     {IP_RULE_V6, "2001:db8:cafe::/64", "unreachable", false},
+                     {IP_RULE_V6, "2001:db8:ca00::/40", "", true},
+                     {IP_RULE_V4, "0.0.0.0/0", "10.251.10.1", false},
+                     {IP_RULE_V4, "192.1.0.0/16", "", false},
+                     {IP_RULE_V4, "192.168.0.0/15", "", false},
+                     {IP_RULE_V4, "192.168.0.0/16", "", true},
+                     {IP_RULE_V4, "192.168.0.0/24", "", true},
+                     {IP_RULE_V4, "100.1.0.0/16", "", false},
+                     {IP_RULE_V4, "100.0.0.0/8", "", false},
+                     {IP_RULE_V4, "100.64.0.0/10", "", true},
+                     {IP_RULE_V4, "100.64.0.0/16", "", true},
+                     {IP_RULE_V4, "100.64.0.0/10", "throw", false},
+                     {IP_RULE_V4, "172.0.0.0/8", "", false},
+                     {IP_RULE_V4, "172.16.0.0/12", "", true},
+                     {IP_RULE_V4, "172.16.0.0/16", "", true},
+                     {IP_RULE_V4, "172.16.0.0/12", "unreachable", false},
+                     {IP_RULE_V4, "172.32.0.0/12", "", false},
+                     {IP_RULE_V4, "169.0.0.0/8", "", false},
+                     {IP_RULE_V4, "169.254.0.0/16", "", true},
+                     {IP_RULE_V4, "169.254.0.0/20", "", true},
+                     {IP_RULE_V4, "169.254.3.0/24", "", true},
+                     {IP_RULE_V4, "170.254.0.0/16", "", false},
+                     {IP_RULE_V4, "10.0.0.0/8", "", true},
+                     {IP_RULE_V4, "10.0.0.0/7", "", false},
+                     {IP_RULE_V4, "10.0.0.0/16", "", true},
+                     {IP_RULE_V4, "10.251.0.0/16", "", true},
+                     {IP_RULE_V4, "10.251.250.0/24", "", true},
+                     {IP_RULE_V4, "10.251.10.2/31", "throw", false},
+                     {IP_RULE_V4, "10.251.10.2/31", "unreachable", false}};
+
+    // To ensure that the nexthops for the above are reachable.
+    // Otherwise, the routes can't be created.
+    static const struct {
+        const char* ipVersion;
+        const char* testDest;
+        const char* testNextHop;
+    } kDirectlyConnectedRoutes[] = {
+            {IP_RULE_V4, "10.251.10.0/30", ""},
+            {IP_RULE_V6, "2001:db8::/32", ""},
+    };
+
+    // Add test physical network
+    const auto& config = makeNativeNetworkConfig(TEST_NETID1, NativeNetworkType::PHYSICAL,
+                                                 INetd::PERMISSION_NONE, false, false);
+    EXPECT_TRUE(mNetd->networkCreate(config).isOk());
+    EXPECT_TRUE(mNetd->networkAddInterface(TEST_NETID1, sTun.name()).isOk());
+
+    // Get current default network NetId
+    binder::Status status = mNetd->networkGetDefault(&mStoredDefaultNetwork);
+    ASSERT_TRUE(status.isOk()) << status.exceptionMessage();
+
+    // Set default network
+    EXPECT_TRUE(mNetd->networkSetDefault(TEST_NETID1).isOk());
+
+    std::string localTableName = std::string(sTun.name() + "_local");
+    // Set up link-local routes for connectivity to the "gateway"
+    for (size_t i = 0; i < std::size(kDirectlyConnectedRoutes); i++) {
+        const auto& td = kDirectlyConnectedRoutes[i];
+
+        binder::Status status =
+                mNetd->networkAddRoute(TEST_NETID1, sTun.name(), td.testDest, td.testNextHop);
+        EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
+        expectNetworkRouteExists(td.ipVersion, sTun.name(), td.testDest, td.testNextHop,
+                                 sTun.name().c_str());
+        // Verify routes in local table
+        expectNetworkRouteExists(td.ipVersion, sTun.name(), td.testDest, td.testNextHop,
+                                 localTableName.c_str());
+    }
+
+    for (size_t i = 0; i < std::size(kTestData); i++) {
+        const auto& td = kTestData[i];
+        SCOPED_TRACE(StringPrintf("case ip:%s, dest:%s, nexHop:%s, expect:%d", td.ipVersion,
+                                  td.testDest, td.testNextHop, td.expectInLocalTable));
+        binder::Status status =
+                mNetd->networkAddRoute(TEST_NETID1, sTun.name(), td.testDest, td.testNextHop);
+        EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
+        // Verify routes in local table
+        if (td.expectInLocalTable) {
+            expectNetworkRouteExists(td.ipVersion, sTun.name(), td.testDest, td.testNextHop,
+                                     localTableName.c_str());
+        } else {
+            expectNetworkRouteDoesNotExist(td.ipVersion, sTun.name(), td.testDest, td.testNextHop,
+                                           localTableName.c_str());
+        }
+
+        status = mNetd->networkRemoveRoute(TEST_NETID1, sTun.name(), td.testDest, td.testNextHop);
+        EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
+        expectNetworkRouteDoesNotExist(td.ipVersion, sTun.name(), td.testDest, td.testNextHop,
+                                       localTableName.c_str());
+    }
+
+    for (size_t i = 0; i < std::size(kDirectlyConnectedRoutes); i++) {
+        const auto& td = kDirectlyConnectedRoutes[i];
+        status = mNetd->networkRemoveRoute(TEST_NETID1, sTun.name(), td.testDest, td.testNextHop);
+        EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
+    }
+
+    // Set default network back
+    status = mNetd->networkSetDefault(mStoredDefaultNetwork);
+
+    // Remove test physical network
+    EXPECT_TRUE(mNetd->networkDestroy(TEST_NETID1).isOk());
+}
 
 namespace {
 
@@ -3272,18 +3389,26 @@ TEST_F(NetdBinderTest, OemNetdRelated) {
 }
 
 void NetdBinderTest::createVpnNetworkWithUid(bool secure, uid_t uid, int vpnNetId,
-                                             int fallthroughNetId) {
+                                             int fallthroughNetId, int nonDefaultNetId) {
     // Re-init sTun* to ensure route rule exists.
     sTun.destroy();
     sTun.init();
     sTun2.destroy();
     sTun2.init();
+    sTun3.destroy();
+    sTun3.init();
 
     // Create physical network with fallthroughNetId but not set it as default network
     auto config = makeNativeNetworkConfig(fallthroughNetId, NativeNetworkType::PHYSICAL,
                                           INetd::PERMISSION_NONE, false, false);
     EXPECT_TRUE(mNetd->networkCreate(config).isOk());
     EXPECT_TRUE(mNetd->networkAddInterface(fallthroughNetId, sTun.name()).isOk());
+    // Create another physical network in order to test VPN behaviour with multiple networks
+    // connected, of which one may be the default.
+    auto nonDefaultNetworkConfig = makeNativeNetworkConfig(
+            nonDefaultNetId, NativeNetworkType::PHYSICAL, INetd::PERMISSION_NONE, false, false);
+    EXPECT_TRUE(mNetd->networkCreate(nonDefaultNetworkConfig).isOk());
+    EXPECT_TRUE(mNetd->networkAddInterface(nonDefaultNetId, sTun3.name()).isOk());
 
     // Create VPN with vpnNetId
     config.netId = vpnNetId;
@@ -3299,6 +3424,9 @@ void NetdBinderTest::createVpnNetworkWithUid(bool secure, uid_t uid, int vpnNetI
     EXPECT_TRUE(mNetd->networkAddRoute(TEST_NETID1, sTun.name(), "::/0", "").isOk());
     // Add limited route
     EXPECT_TRUE(mNetd->networkAddRoute(TEST_NETID2, sTun2.name(), "2001:db8::/32", "").isOk());
+
+    // Also add default route to non-default network for per app default use.
+    EXPECT_TRUE(mNetd->networkAddRoute(TEST_NETID3, sTun3.name(), "::/0", "").isOk());
 }
 
 void NetdBinderTest::createAndSetDefaultNetwork(int netId, const std::string& interface,
@@ -3463,9 +3591,10 @@ void expectVpnFallthroughRuleExists(const std::string& ifName, int vpnNetId) {
 }
 
 void expectVpnFallthroughWorks(android::net::INetd* netdService, bool bypassable, uid_t uid,
-                               const TunInterface& fallthroughNetwork,
-                               const TunInterface& vpnNetwork, int vpnNetId = TEST_NETID2,
-                               int fallthroughNetId = TEST_NETID1) {
+                               uid_t uidNotInVpn, const TunInterface& fallthroughNetwork,
+                               const TunInterface& vpnNetwork, const TunInterface& otherNetwork,
+                               int vpnNetId = TEST_NETID2, int fallthroughNetId = TEST_NETID1,
+                               int otherNetId = TEST_NETID3) {
     // Set default network to NETID_UNSET
     EXPECT_TRUE(netdService->networkSetDefault(NETID_UNSET).isOk());
 
@@ -3499,8 +3628,10 @@ void expectVpnFallthroughWorks(android::net::INetd* netdService, bool bypassable
     // Check if fallthrough rule exists
     expectVpnFallthroughRuleExists(fallthroughNetwork.name(), vpnNetId);
 
-    // Check if local exclusion rule exists
+    // Check if local exclusion rule exists for default network
     expectVpnLocalExclusionRuleExists(fallthroughNetwork.name(), true);
+    // No local exclusion rule for non-default network
+    expectVpnLocalExclusionRuleExists(otherNetwork.name(), false);
 
     // Expect fallthrough to default network
     // The fwmark differs depending on whether the VPN is bypassable or not.
@@ -3540,6 +3671,25 @@ void expectVpnFallthroughWorks(android::net::INetd* netdService, bool bypassable
         EXPECT_FALSE(sendIPv6PacketFromUid(uid, outsideVpnAddr, &fwmark, fallthroughFd));
         EXPECT_FALSE(sendIPv6PacketFromUid(uid, insideVpnAddr, &fwmark, fallthroughFd));
     }
+
+    // Add per-app uid ranges.
+    EXPECT_TRUE(netdService
+                        ->networkAddUidRanges(otherNetId,
+                                              {makeUidRangeParcel(uidNotInVpn, uidNotInVpn)})
+                        .isOk());
+
+    int appDefaultFd = otherNetwork.getFdForTesting();
+
+    // UID is not inside the VPN range, so it won't go to vpn network.
+    // It won't fall into per app local rule because it's explicitly selected.
+    EXPECT_TRUE(sendIPv6PacketFromUid(uidNotInVpn, outsideVpnAddr, &fwmark, fallthroughFd));
+    EXPECT_TRUE(sendIPv6PacketFromUid(uidNotInVpn, insideVpnAddr, &fwmark, fallthroughFd));
+
+    // Reset explicitly selection.
+    setNetworkForProcess(NETID_UNSET);
+    // Connections can go to app default network.
+    EXPECT_TRUE(sendIPv6PacketFromUid(uidNotInVpn, insideVpnAddr, &fwmark, appDefaultFd));
+    EXPECT_TRUE(sendIPv6PacketFromUid(uidNotInVpn, outsideVpnAddr, &fwmark, appDefaultFd));
 }
 
 }  // namespace
@@ -3548,14 +3698,16 @@ TEST_F(NetdBinderTest, SecureVPNFallthrough) {
     createVpnNetworkWithUid(true /* secure */, TEST_UID1);
     // Get current default network NetId
     ASSERT_TRUE(mNetd->networkGetDefault(&mStoredDefaultNetwork).isOk());
-    expectVpnFallthroughWorks(mNetd.get(), false /* bypassable */, TEST_UID1, sTun, sTun2);
+    expectVpnFallthroughWorks(mNetd.get(), false /* bypassable */, TEST_UID1, TEST_UID2, sTun,
+                              sTun2, sTun3);
 }
 
 TEST_F(NetdBinderTest, BypassableVPNFallthrough) {
     createVpnNetworkWithUid(false /* secure */, TEST_UID1);
     // Get current default network NetId
     ASSERT_TRUE(mNetd->networkGetDefault(&mStoredDefaultNetwork).isOk());
-    expectVpnFallthroughWorks(mNetd.get(), true /* bypassable */, TEST_UID1, sTun, sTun2);
+    expectVpnFallthroughWorks(mNetd.get(), true /* bypassable */, TEST_UID1, TEST_UID2, sTun, sTun2,
+                              sTun3);
 }
 
 namespace {
@@ -3710,6 +3862,7 @@ void verifyAppUidRules(std::vector<bool>&& expectedResults, std::vector<UidRange
     ASSERT_EQ(expectedResults.size(), uidRanges.size());
     if (iface.size()) {
         std::string action = StringPrintf("lookup %s ", iface.c_str());
+        std::string action_local = StringPrintf("lookup %s_local ", iface.c_str());
         for (unsigned long i = 0; i < uidRanges.size(); i++) {
             EXPECT_EQ(expectedResults[i],
                       ipRuleExistsForRange(RULE_PRIORITY_UID_EXPLICIT_NETWORK + subPriority,
@@ -3720,6 +3873,8 @@ void verifyAppUidRules(std::vector<bool>&& expectedResults, std::vector<UidRange
             EXPECT_EQ(expectedResults[i],
                       ipRuleExistsForRange(RULE_PRIORITY_UID_DEFAULT_NETWORK + subPriority,
                                            uidRanges[i], action));
+            EXPECT_EQ(expectedResults[i], ipRuleExistsForRange(RULE_PRIORITY_UID_LOCAL_ROUTES,
+                                                               uidRanges[i], action_local));
         }
     } else {
         std::string action = "unreachable";
@@ -4638,8 +4793,39 @@ TEST_F(PerAppNetworkPermissionsTest, PermissionOnlyAffectsUid) {
     }
 }
 
-class MDnsBinderTest : public ::testing::Test {
+class MDnsBinderTest : public NetNativeTestBase {
   public:
+    class TestMDnsListener : public android::net::mdns::aidl::BnMDnsEventListener {
+      public:
+        Status onServiceRegistrationStatus(const RegistrationInfo& /*status*/) override {
+            // no-op
+            return Status::ok();
+        }
+        Status onServiceDiscoveryStatus(const DiscoveryInfo& /*status*/) override {
+            // no-op
+            return Status::ok();
+        }
+        Status onServiceResolutionStatus(const ResolutionInfo& /*status*/) override {
+            // no-op
+            return Status::ok();
+        }
+        Status onGettingServiceAddressStatus(const GetAddressInfo& status) override {
+            if (status.id == mOperationId) {
+                std::lock_guard lock(mCvMutex);
+                mCv.notify_one();
+            }
+            return Status::ok();
+        }
+        std::condition_variable& getCv() { return mCv; }
+        std::mutex& getCvMutex() { return mCvMutex; }
+        void setOperationId(int operationId) { mOperationId = operationId; }
+
+      private:
+        std::mutex mCvMutex;
+        std::condition_variable mCv;
+        int mOperationId;
+    };
+
     MDnsBinderTest() {
         sp<IServiceManager> sm = android::defaultServiceManager();
         sp<IBinder> binder = sm->getService(String16("mdns"));
@@ -4648,31 +4834,45 @@ class MDnsBinderTest : public ::testing::Test {
         }
     }
 
-    void SetUp() override { ASSERT_NE(nullptr, mMDns.get()); }
+    void SetUp() override {
+        ASSERT_NE(nullptr, mMDns.get());
+        // Start the daemon for mdns operations.
+        mDaemonStarted = mMDns->startDaemon().isOk();
+    }
 
-    void TearDown() override {}
+    void TearDown() override {
+        if (mDaemonStarted) mMDns->stopDaemon();
+    }
+
+    std::cv_status getServiceAddress(int operationId, const sp<TestMDnsListener>& listener);
 
   protected:
     sp<IMDns> mMDns;
+
+  private:
+    bool mDaemonStarted = false;
 };
 
-class TestMDnsListener : public android::net::mdns::aidl::BnMDnsEventListener {
-  public:
-    Status onServiceRegistrationStatus(const RegistrationInfo& /* status */) override {
-        return Status::ok();
-    }
-    Status onServiceDiscoveryStatus(const DiscoveryInfo& /* status */) override {
-        return Status::ok();
-    }
-    Status onServiceResolutionStatus(const ResolutionInfo& /* status */) override {
-        return Status::ok();
-    }
-    Status onGettingServiceAddressStatus(const GetAddressInfo& /* status */) override {
-        return Status::ok();
-    }
-};
+std::cv_status MDnsBinderTest::getServiceAddress(int operationId,
+                                                 const sp<TestMDnsListener>& listener) {
+    GetAddressInfo info;
+    info.id = operationId;
+    info.hostname = "Android.local";
+    info.interfaceIdx = 0;
+    binder::Status status = mMDns->getServiceAddress(info);
+    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
+
+    auto& cv = listener->getCv();
+    auto& cvMutex = listener->getCvMutex();
+    std::unique_lock lock(cvMutex);
+    // Wait for a long time to prevent test flaky.
+    return cv.wait_for(lock, std::chrono::milliseconds(2500));
+}
 
 TEST_F(MDnsBinderTest, EventListenerTest) {
+    // Start the Binder thread pool.
+    android::ProcessState::self()->startThreadPool();
+
     // Register a null listener.
     binder::Status status = mMDns->registerEventListener(nullptr);
     EXPECT_FALSE(status.isOk());
@@ -4681,8 +4881,8 @@ TEST_F(MDnsBinderTest, EventListenerTest) {
     status = mMDns->unregisterEventListener(nullptr);
     EXPECT_FALSE(status.isOk());
 
-    // Register the test listener.
-    android::sp<TestMDnsListener> testListener = new TestMDnsListener();
+    // Register a test listener
+    auto testListener = android::sp<TestMDnsListener>::make();
     status = mMDns->registerEventListener(testListener);
     EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
 
@@ -4690,7 +4890,28 @@ TEST_F(MDnsBinderTest, EventListenerTest) {
     status = mMDns->registerEventListener(testListener);
     EXPECT_FALSE(status.isOk());
 
+    // Verify the listener can receive callback.
+    int id = arc4random_uniform(10000);  // use random number
+    testListener->setOperationId(id);
+    EXPECT_EQ(std::cv_status::no_timeout, getServiceAddress(id, testListener));
+    // Stop getting address operation to release the service reference on MDnsSd
+    status = mMDns->stopOperation(id);
+    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
+
     // Unregister the test listener
+    status = mMDns->unregisterEventListener(testListener);
+    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
+
+    // Verify the listener can not receive callback.
+    testListener->setOperationId(id + 1);
+    EXPECT_EQ(std::cv_status::timeout, getServiceAddress(id + 1, testListener));
+    // Stop getting address operation to release the service reference on MDnsSd
+    status = mMDns->stopOperation(id + 1);
+    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
+
+    // Registering and unregistering the listener again should work.
+    status = mMDns->registerEventListener(testListener);
+    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
     status = mMDns->unregisterEventListener(testListener);
     EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
 }
