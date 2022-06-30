@@ -29,7 +29,6 @@ filegroup {
         "NetdConstants.cpp",
         "InterfaceController.cpp",
         "NetlinkCommands.cpp",
-        "TcUtils.cpp",
         "SockDiag.cpp",
         "XfrmController.cpp",
     ],
@@ -38,15 +37,17 @@ filegroup {
 // Modules common to both netd and netd_unit_test
 cc_library_static {
     name: "libnetd_server",
-    defaults: ["netd_defaults"],
+    defaults: [
+        "netd_aidl_interface_lateststable_cpp_shared",
+        "netd_defaults",
+    ],
     include_dirs: [
         "system/netd/include",
         "system/netd/server/binder",
     ],
-    header_libs: ["bpf_connectivity_headers"],
+    header_libs: ["bpf_headers"],
     srcs: [
         "BandwidthController.cpp",
-        "ClatdController.cpp",
         "Controllers.cpp",
         "NetdConstants.cpp",
         "FirewallController.cpp",
@@ -56,7 +57,6 @@ cc_library_static {
         "NFLogListener.cpp",
         "NetlinkCommands.cpp",
         "NetlinkManager.cpp",
-        "TcUtils.cpp",
         "RouteController.cpp",
         "SockDiag.cpp",
         "StrictController.cpp",
@@ -74,11 +74,11 @@ cc_library_static {
         "libpcap",
         "libssl",
         "libsysutils",
-        "netd_aidl_interface-V8-cpp",
         "netd_event_listener_interface-V1-cpp",
     ],
     static_libs: [
         "libip_checksum",
+        "libtcutils",
     ],
     aidl: {
         export_aidl_headers: true,
@@ -88,7 +88,10 @@ cc_library_static {
 
 cc_binary {
     name: "netd",
-    defaults: ["netd_defaults"],
+    defaults: [
+        "netd_aidl_interface_lateststable_cpp_shared",
+        "netd_defaults",
+    ],
     include_dirs: [
         "external/mdnsresponder/mDNSShared",
         "system/netd/include",
@@ -97,7 +100,7 @@ cc_binary {
     required: [
         "bpfloader",
     ],
-    header_libs: ["bpf_connectivity_headers"],
+    header_libs: ["bpf_headers"],
     shared_libs: [
         "android.system.net.netd@1.0",
         "android.system.net.netd@1.1",
@@ -117,20 +120,23 @@ cc_binary {
         "libselinux",
         "libsysutils",
         "libutils",
-        "netd_aidl_interface-V8-cpp",
+        "mdns_aidl_interface-V1-cpp",
         "netd_event_listener_interface-V1-cpp",
         "oemnetd_aidl_interface-cpp",
     ],
     static_libs: [
         "libip_checksum",
         "libnetd_server",
+        "libtcutils",
     ],
     srcs: [
         "DummyNetwork.cpp",
         "EventReporter.cpp",
         "FwmarkServer.cpp",
         "LocalNetwork.cpp",
+        "MDnsEventReporter.cpp",
         "MDnsSdListener.cpp",
+        "MDnsService.cpp",
         "NetdCommand.cpp",
         "NetdHwService.cpp",
         "NetdNativeService.cpp",
@@ -154,7 +160,10 @@ cc_binary {
 
 cc_binary {
     name: "ndc",
-    defaults: ["netd_defaults"],
+    defaults: [
+        "netd_aidl_interface_lateststable_cpp_shared",
+        "netd_defaults",
+    ],
     include_dirs: [
         "system/netd/include",
     ],
@@ -170,7 +179,6 @@ cc_binary {
         "libutils",
         "libbinder",
         "dnsresolver_aidl_interface-V7-cpp",
-        "netd_aidl_interface-V6-cpp", // ndc is going to be deprecated. Keep it in v6 is enough.
     ],
     srcs: [
         "ndc.cpp",
@@ -185,7 +193,10 @@ cc_binary {
 
 cc_test {
     name: "netd_unit_test",
-    defaults: ["netd_defaults"],
+    defaults: [
+        "netd_aidl_interface_lateststable_cpp_static",
+        "netd_defaults",
+    ],
     test_suites: ["device-tests"],
     require_root: true,
     include_dirs: [
@@ -193,10 +204,14 @@ cc_test {
         "system/netd/server/binder",
         "system/netd/tests",
     ],
-    header_libs: ["bpf_connectivity_headers"],
+    header_libs: ["bpf_headers"],
+    tidy_timeout_srcs: [
+        "BandwidthControllerTest.cpp",
+        "InterfaceControllerTest.cpp",
+        "XfrmControllerTest.cpp",
+    ],
     srcs: [
         "BandwidthControllerTest.cpp",
-        "ClatdControllerTest.cpp",
         "ControllersTest.cpp",
         "FirewallControllerTest.cpp",
         "IdletimerControllerTest.cpp",
@@ -204,7 +219,6 @@ cc_test {
         "IptablesBaseTest.cpp",
         "IptablesRestoreControllerTest.cpp",
         "NFLogListenerTest.cpp",
-        "TcUtilsTest.cpp",
         "RouteControllerTest.cpp",
         "SockDiagTest.cpp",
         "StrictControllerTest.cpp",
@@ -217,7 +231,7 @@ cc_test {
         "libip_checksum",
         "libnetd_server",
         "libnetd_test_tun_interface",
-        "netd_aidl_interface-V8-cpp",
+        "libtcutils",
         "netd_event_listener_interface-V1-cpp",
     ],
     shared_libs: [
