@@ -32,16 +32,21 @@
 
 #include "log/log.h"
 
+#include <android/binder_manager.h>
+#include <android/binder_process.h>
 #include <binder/IPCThreadState.h>
 #include <binder/IServiceManager.h>
+#include <hidl/HidlTransportSupport.h>
 #include <netdutils/Stopwatch.h>
 #include <processgroup/processgroup.h>
 
 #include "Controllers.h"
 #include "FwmarkServer.h"
 #include "MDnsSdListener.h"
+#include "MDnsService.h"
 #include "NFLogListener.h"
 #include "NetdConstants.h"
+#include "NetdHwAidlService.h"
 #include "NetdHwService.h"
 #include "NetdNativeService.h"
 #include "NetlinkManager.h"
@@ -58,10 +63,12 @@ using android::net::FwmarkServer;
 using android::net::gCtls;
 using android::net::gLog;
 using android::net::makeNFLogListener;
+using android::net::MDnsService;
 using android::net::NetdHwService;
 using android::net::NetdNativeService;
 using android::net::NetlinkManager;
 using android::net::NFLogListener;
+using android::net::aidl::NetdHwAidlService;
 using android::netdutils::Stopwatch;
 
 const char* const PID_FILE_PATH = "/data/misc/net/netd_pid";
@@ -160,8 +167,8 @@ int main() {
         }
         logListener = std::move(result.value());
         auto status = gCtls->wakeupCtrl.init(logListener.get());
-        if (!isOk(result)) {
-            gLog.error("Unable to init WakeupController: %s", toString(result).c_str());
+        if (!isOk(status)) {
+            gLog.error("Unable to init WakeupController: %s", toString(status).c_str());
             // We can still continue without wakeup packet logging.
         }
     }
@@ -174,12 +181,6 @@ int main() {
     // Note that only call initDnsResolver after gCtls initializing.
     if (!initDnsResolver()) {
         ALOGE("Unable to init resolver");
-        exit(1);
-    }
-
-    MDnsSdListener mdnsl;
-    if (mdnsl.startListener()) {
-        ALOGE("Unable to start MDnsSdListener (%s)", strerror(errno));
         exit(1);
     }
 
@@ -197,19 +198,35 @@ int main() {
     }
     gLog.info("Registering NetdNativeService: %" PRId64 "us", subTime.getTimeAndResetUs());
 
+    if ((ret = MDnsService::start()) != android::OK) {
+        ALOGE("Unable to start MDnsService: %d", ret);
+        exit(1);
+    }
+    gLog.info("Registering MDnsService: %" PRId64 "us", subTime.getTimeAndResetUs());
+
     android::net::process::ScopedPidFile pidFile(PID_FILE_PATH);
 
     // Now that netd is ready to process commands, advertise service availability for HAL clients.
+    // Usage of this HAL is anticipated to be thin; one thread per HAL service should suffice,
+    // AIDL and HIDL.
+    android::hardware::configureRpcThreadpool(2, true /* callerWillJoin */);
+    IPCThreadState::self()->disableBackgroundScheduling(true);
+
+    std::thread aidlService = std::thread(NetdHwAidlService::run);
+
     sp<NetdHwService> mHwSvc(new NetdHwService());
+    bool startedHidlService = true;
     if ((ret = mHwSvc->start()) != android::OK) {
-        ALOGE("Unable to start NetdHwService: %d", ret);
-        exit(1);
+        ALOGE("Unable to start HIDL NetdHwService: %d", ret);
+        startedHidlService = false;
     }
+
     gLog.info("Registering NetdHwService: %" PRId64 "us", subTime.getTimeAndResetUs());
     gLog.info("Netd started in %" PRId64 "us", s.timeTakenUs());
-
-    IPCThreadState::self()->joinThreadPool();
-
+    if (startedHidlService) {
+        IPCThreadState::self()->joinThreadPool();
+    }
+    aidlService.join();
     gLog.info("netd exiting");
 
     exit(0);

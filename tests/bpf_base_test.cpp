@@ -33,6 +33,7 @@
 
 #include <android-base/stringprintf.h>
 #include <android-base/strings.h>
+#include <netdutils/NetNativeTestBase.h>
 
 #include "bpf/BpfMap.h"
 #include "bpf/BpfUtils.h"
@@ -48,7 +49,7 @@ namespace bpf {
 constexpr uid_t TEST_UID = UID_MAX - 1;
 constexpr uint32_t TEST_TAG = 42;
 
-class BpfBasicTest : public testing::Test {
+class BpfBasicTest : public NetNativeTestBase {
   protected:
     BpfBasicTest() {}
 };
@@ -84,7 +85,7 @@ TEST_F(BpfBasicTest, TestSocketFilterSetUp) {
 
 TEST_F(BpfBasicTest, TestTagSocket) {
     BpfMap<uint64_t, UidTagValue> cookieTagMap(COOKIE_TAG_MAP_PATH);
-    ASSERT_LE(0, cookieTagMap.getMap());
+    ASSERT_TRUE(cookieTagMap.isValid());
     int sock = socket(AF_INET6, SOCK_STREAM | SOCK_CLOEXEC, 0);
     ASSERT_LE(0, sock);
     uint64_t cookie = getSocketCookie(sock);
@@ -102,7 +103,7 @@ TEST_F(BpfBasicTest, TestTagSocket) {
 
 TEST_F(BpfBasicTest, TestCloseSocketWithoutUntag) {
     BpfMap<uint64_t, UidTagValue> cookieTagMap(COOKIE_TAG_MAP_PATH);
-    ASSERT_LE(0, cookieTagMap.getMap());
+    ASSERT_TRUE(cookieTagMap.isValid());
     int sock = socket(AF_INET6, SOCK_STREAM | SOCK_CLOEXEC, 0);
     ASSERT_LE(0, sock);
     uint64_t cookie = getSocketCookie(sock);
