@@ -198,6 +198,14 @@ public:
   private:
     friend class RouteControllerTest;
 
+    // An expandable array for fixed local prefix though it's only one element now.
+    static constexpr const char* V4_FIXED_LOCAL_PREFIXES[] = {
+            // The multicast range is 224.0.0.0/4 but only limit it to 224.0.0.0/24 since the IPv4
+            // definitions are not as precise as for IPv6, it is the only range that the standards
+            // (RFC 2365 and RFC 5771) specify is link-local and must not be forwarded.
+            "224.0.0.0/24"  // Link-local multicast; non-internet routable
+    };
+
     static std::mutex sInterfaceToTableLock;
     static std::map<std::string, uint32_t> sInterfaceToTable GUARDED_BY(sInterfaceToTableLock);
 
@@ -232,6 +240,7 @@ public:
                                          bool add);
     static bool isLocalRoute(TableType tableType, const char* destination, const char* nexthop);
     static bool isWithinIpv4LocalPrefix(const char* addrstr);
+    static int addFixedLocalRoutes(const char* interface);
 };
 
 // Public because they are called by by RouteControllerTest.cpp.
