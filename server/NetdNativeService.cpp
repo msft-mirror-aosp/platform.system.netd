@@ -145,7 +145,7 @@ status_t NetdNativeService::dump(int fd, const Vector<String16> &args) {
     const binder::Status dump_permission = checkAnyPermission({PERM_DUMP});
     if (!dump_permission.isOk()) {
         const String8 msg(dump_permission.toString8());
-        write(fd, msg.string(), msg.size());
+        write(fd, msg.c_str(), msg.size());
         return PERMISSION_DENIED;
     }
 
@@ -1098,15 +1098,13 @@ binder::Status NetdNativeService::networkClearPermissionForUser(const std::vecto
 
 binder::Status NetdNativeService::networkSetProtectAllow(int32_t uid) {
     ENFORCE_NETWORK_STACK_PERMISSIONS();
-    std::vector<uid_t> uids = {(uid_t) uid};
-    gCtls->netCtrl.allowProtect(uids);
+    gCtls->netCtrl.allowProtect((uid_t) uid);
     return binder::Status::ok();
 }
 
 binder::Status NetdNativeService::networkSetProtectDeny(int32_t uid) {
     ENFORCE_NETWORK_STACK_PERMISSIONS();
-    std::vector<uid_t> uids = {(uid_t) uid};
-    gCtls->netCtrl.denyProtect(uids);
+    gCtls->netCtrl.denyProtect((uid_t) uid);
     return binder::Status::ok();
 }
 

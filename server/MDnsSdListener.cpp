@@ -31,12 +31,13 @@
 #include <sys/poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <thread>
 
 #define LOG_TAG "MDnsDS"
 #define DBG 1
 #define VDBG 1
 
-#include <cutils/properties.h>
+#include <android-base/properties.h>
 #include <log/log.h>
 #include <netdutils/ThreadUtil.h>
 #include <sysutils/SocketClient.h>
@@ -59,6 +60,8 @@ using android::net::mdns::aidl::GetAddressInfo;
 using android::net::mdns::aidl::IMDnsEventListener;
 using android::net::mdns::aidl::RegistrationInfo;
 using android::net::mdns::aidl::ResolutionInfo;
+
+using namespace std::chrono_literals;
 
 static unsigned ifaceIndexToNetId(uint32_t interfaceIndex) {
     char interfaceName[IFNAMSIZ] = {};
@@ -376,41 +379,24 @@ MDnsSdListener::Monitor::Monitor() {
     mPollSize = 10;
     socketpair(AF_LOCAL, SOCK_STREAM | SOCK_CLOEXEC, 0, mCtrlSocketPair);
 
-    const int rval = ::android::netdutils::threadLaunch(this);
-    if (rval != 0) {
-        ALOGW("Error spawning monitor thread: %s (%d)", strerror(-rval), -rval);
-    }
+    mRescanThread = new std::thread(&Monitor::run, this);
 }
 
-#define NAP_TIME 200  // 200 ms between polls
-static int wait_for_property(const char *name, const char *desired_value, int maxwait)
-{
-    char value[PROPERTY_VALUE_MAX] = {'\0'};
-    int maxnaps = (maxwait * 1000) / NAP_TIME;
-
-    if (maxnaps < 1) {
-        maxnaps = 1;
-    }
-
-    while (maxnaps-- > 0) {
-        usleep(NAP_TIME * 1000);
-        if (property_get(name, value, nullptr)) {
-            if (desired_value == nullptr || strcmp(value, desired_value) == 0) {
-                return 0;
-            }
-        }
-    }
-    return -1; /* failure */
+MDnsSdListener::Monitor::~Monitor() {
+    if (VDBG) ALOGD("Monitor recycling");
+    close(mCtrlSocketPair[1]);  // interrupt poll in MDnsSdListener::Monitor::run() and revent will
+                                // be 17 = POLLIN | POLLHUP
+    mRescanThread->join();
+    delete mRescanThread;
+    if (VDBG) ALOGD("Monitor recycled");
 }
 
 int MDnsSdListener::Monitor::startService() {
-    char property_value[PROPERTY_VALUE_MAX];
     std::lock_guard guard(mMutex);
-    property_get(MDNS_SERVICE_STATUS, property_value, "");
-    if (strcmp("running", property_value) != 0) {
+    if (android::base::GetProperty(MDNS_SERVICE_STATUS, "") != "running") {
         ALOGD("Starting MDNSD");
-        property_set("ctl.start", MDNS_SERVICE_NAME);
-        wait_for_property(MDNS_SERVICE_STATUS, "running", 5);
+        android::base::SetProperty("ctl.start", MDNS_SERVICE_NAME);
+        android::base::WaitForProperty(MDNS_SERVICE_STATUS, "running", 5s);
         return -1;
     }
     return 0;
@@ -420,8 +406,8 @@ int MDnsSdListener::Monitor::stopService() {
     std::lock_guard guard(mMutex);
     if (mHead == nullptr) {
         ALOGD("Stopping MDNSD");
-        property_set("ctl.stop", MDNS_SERVICE_NAME);
-        wait_for_property(MDNS_SERVICE_STATUS, "stopped", 5);
+        android::base::SetProperty("ctl.stop", MDNS_SERVICE_NAME);
+        android::base::WaitForProperty(MDNS_SERVICE_STATUS, "stopped", 5s);
         return -1;
     }
     return 0;
@@ -461,14 +447,18 @@ void MDnsSdListener::Monitor::run() {
                 }
             }
             if (VDBG) ALOGD("controlSocket shows revent= %d", mPollFds[0].revents);
-            switch (mPollFds[0].revents) {
-                case POLLIN: {
-                    char readBuf[2];
-                    read(mCtrlSocketPair[0], &readBuf, 1);
-                    if (DBG) ALOGD("MDnsSdListener::Monitor got %c", readBuf[0]);
-                    if (memcmp(RESCAN, readBuf, 1) == 0) {
-                        pollCount = rescan();
-                    }
+            if (mPollFds[0].revents & POLLHUP) {
+                free(mPollFds);
+                free(mPollRefs);
+                if (VDBG) ALOGD("Monitor thread leaving.");
+                return;
+            }
+            if (mPollFds[0].revents == POLLIN) {
+                char readBuf[2];
+                read(mCtrlSocketPair[0], &readBuf, 1);
+                if (DBG) ALOGD("MDnsSdListener::Monitor got %c", readBuf[0]);
+                if (memcmp(RESCAN, readBuf, 1) == 0) {
+                    pollCount = rescan();
                 }
             }
             mPollFds[0].revents = 0;
