@@ -92,24 +92,9 @@ TEST(NetdSELinuxTest, CheckProperBpfLabels) {
     assertBpfContext("/sys/fs/bpf/net_shared", "fs_bpf_net_shared");
     assertBpfContext("/sys/fs/bpf/netd_readonly", "fs_bpf_netd_readonly");
     assertBpfContext("/sys/fs/bpf/netd_shared", "fs_bpf_netd_shared");
+    assertBpfContext("/sys/fs/bpf/tethering", "fs_bpf_tethering");
     assertBpfContext("/sys/fs/bpf/vendor", "fs_bpf_vendor");
     assertBpfContext("/sys/fs/bpf/loader", "fs_bpf_loader");
-}
-
-bool isTetheringInProcess() {
-    int v = access("/apex/com.android.tethering/etc/flag/in-process", F_OK);
-    if (!v) return true;
-    EXPECT_EQ(v, -1) << "expected return of found(0) or notfound(-1/ENOENT)";
-    EXPECT_EQ(errno, ENOENT) << "expected return of found(0) or notfound(-1/ENOENT)";
-    return false;
-}
-
-TEST(NetdSELinuxTest, CheckProperBpfTetheringLabels) {
-    if (isTetheringInProcess()) {
-        assertBpfContext("/sys/fs/bpf/net_shared/tethering", "fs_bpf_net_shared");
-    } else {
-        assertBpfContext("/sys/fs/bpf/tethering", "fs_bpf_tethering");
-    }
 }
 
 // Trivial thread function that simply immediately terminates successfully.
@@ -122,11 +107,13 @@ typedef int (*thread_t)(void*);
 static void nsTest(int flags, bool success, thread_t newThread) {
     // We need a minimal stack, but not clear if it will grow up or down,
     // So allocate 2 pages and give a pointer to the middle.
-    static char stack[PAGE_SIZE * 2];
+    static const size_t kPageSize = getpagesize();
+    static std::vector<char> stack(kPageSize * 2);
+
     errno = 0;
     // VFORK: if thread is successfully created, then kernel will wait for it
     // to terminate before we resume -> hence static stack is safe to reuse.
-    int tid = clone(newThread, &stack[PAGE_SIZE], flags | CLONE_VFORK, NULL);
+    int tid = clone(newThread, &stack[kPageSize], flags | CLONE_VFORK, NULL);
     if (success) {
         ASSERT_EQ(errno, 0);
         ASSERT_GE(tid, 0);

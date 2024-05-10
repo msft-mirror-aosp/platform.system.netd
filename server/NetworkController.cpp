@@ -143,7 +143,7 @@ int NetworkController::DelegateImpl::modifyFallthrough(const std::string& physic
 
 NetworkController::NetworkController() :
         mDelegateImpl(new NetworkController::DelegateImpl(this)), mDefaultNetId(NETID_UNSET),
-        mProtectableUsers({AID_VPN}) {
+        mProtectableUsers({std::make_pair(AID_VPN, NETID_UNSET)}) {
     gLog.info("enter NetworkController ctor");
     mNetworks[LOCAL_NET_ID] = new LocalNetwork(LOCAL_NET_ID);
     mNetworks[DUMMY_NET_ID] = new DummyNetwork(DUMMY_NET_ID);
@@ -343,7 +343,7 @@ void NetworkController::getNetworkContext(
     Fwmark fwmark;
     fwmark.netId = nc.app_netid;
     fwmark.explicitlySelected = explicitlySelected;
-    fwmark.protectedFromVpn = explicitlySelected && canProtectLocked(uid);
+    fwmark.protectedFromVpn = explicitlySelected && canProtectLocked(uid, nc.app_netid);
     fwmark.permission = getPermissionForUserLocked(uid);
     nc.app_mark = fwmark.intValue;
 
@@ -371,6 +371,19 @@ unsigned NetworkController::getNetworkForInterfaceLocked(const char* interface) 
 unsigned NetworkController::getNetworkForInterface(const char* interface) const {
     ScopedRLock lock(mRWLock);
     return getNetworkForInterfaceLocked(interface);
+}
+
+unsigned NetworkController::getNetworkForInterfaceLocked(const int ifIndex) const {
+    char interfaceName[IFNAMSIZ] = {};
+    if (if_indextoname(ifIndex, interfaceName)) {
+        return getNetworkForInterfaceLocked(interfaceName);
+    }
+    return NETID_UNSET;
+}
+
+unsigned NetworkController::getNetworkForInterface(const int ifIndex) const {
+    ScopedRLock lock(mRWLock);
+    return getNetworkForInterfaceLocked(ifIndex);
 }
 
 bool NetworkController::isVirtualNetwork(unsigned netId) const {
@@ -704,26 +717,31 @@ bool NetworkController::removeInterfaceAddress(unsigned ifindex, const char* add
     return true;
 }
 
-bool NetworkController::canProtectLocked(uid_t uid) const {
-    return ((getPermissionForUserLocked(uid) & PERMISSION_SYSTEM) == PERMISSION_SYSTEM) ||
-           mProtectableUsers.find(uid) != mProtectableUsers.end();
+bool NetworkController::isProtectableLocked(uid_t uid, unsigned netId) const {
+    return mProtectableUsers.find({uid, NETID_UNSET}) != mProtectableUsers.cend() ||
+           mProtectableUsers.find({uid, netId}) != mProtectableUsers.cend();
 }
 
-bool NetworkController::canProtect(uid_t uid) const {
-    ScopedRLock lock(mRWLock);
-    return canProtectLocked(uid);
-}
-
-void NetworkController::allowProtect(const std::vector<uid_t>& uids) {
-    ScopedWLock lock(mRWLock);
-    mProtectableUsers.insert(uids.begin(), uids.end());
-}
-
-void NetworkController::denyProtect(const std::vector<uid_t>& uids) {
-    ScopedWLock lock(mRWLock);
-    for (uid_t uid : uids) {
-        mProtectableUsers.erase(uid);
+bool NetworkController::canProtectLocked(uid_t uid, unsigned netId) const {
+    if ((getPermissionForUserLocked(uid) & PERMISSION_SYSTEM) == PERMISSION_SYSTEM) {
+        return true;
     }
+    return isProtectableLocked(uid, netId);
+}
+
+bool NetworkController::canProtect(uid_t uid, unsigned netId) const {
+    ScopedRLock lock(mRWLock);
+    return canProtectLocked(uid, netId);
+}
+
+void NetworkController::allowProtect(uid_t uid, unsigned netId) {
+    ScopedWLock lock(mRWLock);
+    mProtectableUsers.emplace(std::make_pair(uid, netId));
+}
+
+void NetworkController::denyProtect(uid_t uid, unsigned netId) {
+    ScopedWLock lock(mRWLock);
+    mProtectableUsers.erase(std::make_pair(uid, netId));
 }
 
 void NetworkController::dump(DumpWriter& dw) {
@@ -793,6 +811,12 @@ void NetworkController::dump(DumpWriter& dw) {
     dw.println("NETWORK: %s", android::base::Join(networkUids, ", ").c_str());
     dw.println("SYSTEM: %s", android::base::Join(systemUids, ", ").c_str());
     dw.decIndent();
+
+    dw.blankline();
+    dw.println("Protectable users:");
+    for (auto it : mProtectableUsers) {
+        dw.println("[uid: %u : netId: %u]", it.first, it.second);
+    }
 
     dw.decIndent();
 
@@ -912,8 +936,8 @@ int NetworkController::checkUserNetworkAccessLocked(uid_t uid, unsigned netId) c
     // If a VPN applies to the UID, and the VPN is secure (i.e., not bypassable), then the UID can
     // only select a different network if it has the ability to protect its sockets.
     VirtualNetwork* virtualNetwork = getVirtualNetworkForUserLocked(uid);
-    if (virtualNetwork && virtualNetwork->isSecure() &&
-            mProtectableUsers.find(uid) == mProtectableUsers.end()) {
+    if (virtualNetwork && virtualNetwork->isSecure() && !isProtectableLocked(uid, netId)) {
+        ALOGE("uid %u can't select networks other than %u.", uid, virtualNetwork->getNetId());
         return -EPERM;
     }
     // If the UID wants to use a physical network and it has a UID range that includes the UID, the

@@ -21,6 +21,8 @@
 #include <fstream>
 #include <string>
 
+#include "bpf/KernelUtils.h"
+
 namespace android {
 namespace net {
 
@@ -42,14 +44,18 @@ class KernelConfigVerifier final {
         return false;
     }
 
+    bool hasModule(const std::string& option) const {
+        const auto& configMap = mRuntimeInfo->kernelConfigs();
+        auto it = configMap.find(option);
+        if (it != configMap.cend()) {
+            return (it->second == "y") || (it->second == "m");
+        }
+        return false;
+    }
+
   private:
     std::shared_ptr<const RuntimeInfo> mRuntimeInfo;
 };
-
-bool isGsiImage() {
-    std::ifstream ifs("/system/system_ext/etc/init/init.gsi.rc");
-    return ifs.good();
-}
 
 }  // namespace
 
@@ -61,15 +67,86 @@ bool isGsiImage() {
  * CONFIG_BPF_JIT=y
  */
 TEST(KernelTest, TestRateLimitingSupport) {
-    if (isGsiImage()) {
-        // skip test on gsi images
-        GTEST_SKIP() << "GSI Image";
-    }
     KernelConfigVerifier configVerifier;
-    ASSERT_TRUE(configVerifier.hasOption("CONFIG_NET_CLS_MATCHALL"));
-    ASSERT_TRUE(configVerifier.hasOption("CONFIG_NET_ACT_POLICE"));
-    ASSERT_TRUE(configVerifier.hasOption("CONFIG_NET_ACT_BPF"));
-    ASSERT_TRUE(configVerifier.hasOption("CONFIG_BPF_JIT"));
+    EXPECT_TRUE(configVerifier.hasOption("CONFIG_NET_CLS_MATCHALL"));
+    EXPECT_TRUE(configVerifier.hasOption("CONFIG_NET_ACT_POLICE"));
+    EXPECT_TRUE(configVerifier.hasOption("CONFIG_NET_ACT_BPF"));
+    EXPECT_TRUE(configVerifier.hasOption("CONFIG_BPF_JIT"));
+}
+
+TEST(KernelTest, TestRequireBpfUnprivDefaultOn) {
+    KernelConfigVerifier configVerifier;
+    EXPECT_FALSE(configVerifier.hasOption("CONFIG_BPF_UNPRIV_DEFAULT_OFF"));
+}
+
+TEST(KernelTest, TestBpfJitAlwaysOn) {
+    // 32-bit arm & x86 kernels aren't capable of JIT-ing all of our BPF code,
+    if (bpf::isKernel32Bit()) GTEST_SKIP() << "Exempt on 32-bit kernel.";
+    KernelConfigVerifier configVerifier;
+    ASSERT_TRUE(configVerifier.hasOption("CONFIG_BPF_JIT_ALWAYS_ON"));
+}
+
+/* Android 14/U should only launch on 64-bit kernels
+ *   T launches on 5.10/5.15
+ *   U launches on 5.15/6.1
+ * So >=5.16 implies isKernel64Bit()
+ */
+TEST(KernelTest, TestKernel64Bit) {
+    if (!bpf::isAtLeastKernelVersion(5, 16, 0)) GTEST_SKIP() << "Exempt on < 5.16 kernel.";
+    ASSERT_TRUE(bpf::isKernel64Bit());
+}
+
+// Android V requires x86 kernels to be 64-bit, as among other things
+// 32-bit x86 kernels have subtly different structure layouts for XFRM
+TEST(KernelTest, TestX86Kernel64Bit) {
+    if (!bpf::isX86()) GTEST_SKIP() << "Exempt on non-x86 architecture.";
+    ASSERT_TRUE(bpf::isKernel64Bit());
+}
+
+// Android V requires 4.19+
+TEST(KernelTest, TestKernel419) {
+    ASSERT_TRUE(bpf::isAtLeastKernelVersion(4, 19, 0));
+}
+
+TEST(KernelTest, TestIsLTS) {
+    ASSERT_TRUE(bpf::isLtsKernel());
+}
+
+static bool isGSI() {
+    // From //system/gsid/libgsi.cpp IsGsiRunning()
+    return !access("/metadata/gsi/dsu/booted", F_OK);
+}
+
+#define ifIsKernelThenMinLTS(major, minor, sub) do { \
+    if (isGSI()) GTEST_SKIP() << "Test is meaningless on GSI."; \
+    if (!bpf::isKernelVersion((major), (minor))) GTEST_SKIP() << "Not for this LTS ver."; \
+    ASSERT_TRUE(bpf::isAtLeastKernelVersion((major), (minor), (sub))); \
+} while (0)
+
+TEST(KernelTest, TestMinRequiredLTS_4_19) { ifIsKernelThenMinLTS(4, 19, 236); }
+TEST(KernelTest, TestMinRequiredLTS_5_4)  { ifIsKernelThenMinLTS(5, 4, 186); }
+TEST(KernelTest, TestMinRequiredLTS_5_10) { ifIsKernelThenMinLTS(5, 10, 199); }
+TEST(KernelTest, TestMinRequiredLTS_5_15) { ifIsKernelThenMinLTS(5, 15, 136); }
+TEST(KernelTest, TestMinRequiredLTS_6_1)  { ifIsKernelThenMinLTS(6, 1, 57); }
+TEST(KernelTest, TestMinRequiredLTS_6_6)  { ifIsKernelThenMinLTS(6, 6, 0); }
+
+TEST(KernelTest, TestSupportsCommonUsbEthernetDongles) {
+    KernelConfigVerifier configVerifier;
+    if (!configVerifier.hasModule("CONFIG_USB")) GTEST_SKIP() << "Exempt without USB support.";
+    EXPECT_TRUE(configVerifier.hasModule("CONFIG_USB_NET_AX8817X"));
+    EXPECT_TRUE(configVerifier.hasModule("CONFIG_USB_NET_AX88179_178A"));
+    EXPECT_TRUE(configVerifier.hasModule("CONFIG_USB_NET_CDCETHER"));
+    EXPECT_TRUE(configVerifier.hasModule("CONFIG_USB_NET_CDC_EEM"));
+    EXPECT_TRUE(configVerifier.hasModule("CONFIG_USB_NET_CDC_NCM"));
+    if (bpf::isAtLeastKernelVersion(5, 4, 0))
+        EXPECT_TRUE(configVerifier.hasModule("CONFIG_USB_NET_AQC111"));
+
+    EXPECT_TRUE(configVerifier.hasModule("CONFIG_USB_RTL8152"));
+    EXPECT_TRUE(configVerifier.hasModule("CONFIG_USB_RTL8150"));
+    if (bpf::isAtLeastKernelVersion(5, 15, 0)) {
+        EXPECT_TRUE(configVerifier.hasModule("CONFIG_USB_RTL8153_ECM"));
+        EXPECT_TRUE(configVerifier.hasModule("CONFIG_AX88796B_PHY"));
+    }
 }
 
 }  // namespace net

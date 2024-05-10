@@ -102,6 +102,7 @@ public:
     unsigned getNetworkForConnect(uid_t uid) const;
     void getNetworkContext(unsigned netId, uid_t uid, struct android_net_context* netcontext) const;
     unsigned getNetworkForInterface(const char* interface) const;
+    unsigned getNetworkForInterface(const int ifIndex) const;
     bool isVirtualNetwork(unsigned netId) const;
 
     [[nodiscard]] int createPhysicalNetwork(unsigned netId, Permission permission, bool local);
@@ -142,9 +143,9 @@ public:
     // Returns true if we should destroy sockets on this address.
     bool removeInterfaceAddress(unsigned ifIndex, const char* address);
 
-    bool canProtect(uid_t uid) const;
-    void allowProtect(const std::vector<uid_t>& uids);
-    void denyProtect(const std::vector<uid_t>& uids);
+    bool canProtect(uid_t uid, unsigned netId) const;
+    void allowProtect(uid_t uid, unsigned netId);
+    void denyProtect(uid_t uid, unsigned netId);
 
     void dump(netdutils::DumpWriter& dw);
     int setNetworkAllowlist(const std::vector<netd::aidl::NativeUidRangeConfig>& rangeConfigs);
@@ -160,7 +161,9 @@ public:
     uint32_t getNetworkForDnsLocked(unsigned* netId, uid_t uid) const;
     unsigned getNetworkForConnectLocked(uid_t uid) const;
     unsigned getNetworkForInterfaceLocked(const char* interface) const;
-    bool canProtectLocked(uid_t uid) const;
+    unsigned getNetworkForInterfaceLocked(const int ifIndex) const;
+    bool isProtectableLocked(uid_t uid, unsigned netId) const;
+    bool canProtectLocked(uid_t uid, unsigned netId) const;
     bool isVirtualNetworkLocked(unsigned netId) const;
     VirtualNetwork* getVirtualNetworkForUserLocked(uid_t uid) const;
     Network* getPhysicalOrUnreachableNetworkForUserLocked(uid_t uid) const;
@@ -185,7 +188,14 @@ public:
     unsigned mDefaultNetId;
     std::map<unsigned, Network*> mNetworks;  // Map keys are NetIds.
     std::map<uid_t, Permission> mUsers;
-    std::set<uid_t> mProtectableUsers;
+    // Set of <UID, netId> pairs that specify which UIDs can protect sockets and bypass
+    // VPNs. For each pair:
+    //
+    // - If the netId is NETID_UNSET, then the UID can call protectFromVpn and can
+    //   bypass VPNs by explicitly selecting any network.
+    // - Otherwise, the UID can bypass VPNs only by explicitly selecting the specified
+    //   network, and cannot call protectFromVpn on its sockets.
+    std::set<std::pair<uid_t, unsigned>> mProtectableUsers;
     // Map interface (ifIndex) to its current NetId, or the last NetId if the interface was removed
     // from the network and not added to another network. This state facilitates the interface to
     // NetId lookup during RTM_DELADDR (NetworkController::removeInterfaceAddress), when the
