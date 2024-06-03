@@ -108,24 +108,24 @@ TEST(KernelTest, TestKernel419) {
     ASSERT_TRUE(bpf::isAtLeastKernelVersion(4, 19, 0));
 }
 
-static bool isKernel(unsigned major, unsigned minor) {
-    return bpf::isAtLeastKernelVersion(major, minor, 0)
-        && !bpf::isAtLeastKernelVersion(major, minor + 1, 0);
+// RiscV is not yet supported: make it fail VTS.
+TEST(KernelTest, TestNotRiscV) {
+    ASSERT_TRUE(!bpf::isRiscV());
 }
 
 TEST(KernelTest, TestIsLTS) {
-    ASSERT_TRUE(
-        isKernel(4, 19) ||
-        isKernel(5, 4) ||
-        isKernel(5, 10) ||
-        isKernel(5, 15) ||
-        isKernel(6, 1) ||
-        isKernel(6, 6));
+    ASSERT_TRUE(bpf::isLtsKernel());
+}
+
+static bool isGSI() {
+    // From //system/gsid/libgsi.cpp IsGsiRunning()
+    return !access("/metadata/gsi/dsu/booted", F_OK);
 }
 
 #define ifIsKernelThenMinLTS(major, minor, sub) do { \
-  if (!isKernel((major), (minor))) GTEST_SKIP() << "Not for this kernel major/minor version."; \
-  ASSERT_TRUE(bpf::isAtLeastKernelVersion((major), (minor), (sub))); \
+    if (isGSI()) GTEST_SKIP() << "Test is meaningless on GSI."; \
+    if (!bpf::isKernelVersion((major), (minor))) GTEST_SKIP() << "Not for this LTS ver."; \
+    ASSERT_TRUE(bpf::isAtLeastKernelVersion((major), (minor), (sub))); \
 } while (0)
 
 TEST(KernelTest, TestMinRequiredLTS_4_19) { ifIsKernelThenMinLTS(4, 19, 236); }
