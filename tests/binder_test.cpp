@@ -72,12 +72,6 @@
 #include "TestUnsolService.h"
 #include "XfrmController.h"
 #include "android/net/INetd.h"
-#include "android/net/mdns/aidl/BnMDnsEventListener.h"
-#include "android/net/mdns/aidl/DiscoveryInfo.h"
-#include "android/net/mdns/aidl/GetAddressInfo.h"
-#include "android/net/mdns/aidl/IMDns.h"
-#include "android/net/mdns/aidl/RegistrationInfo.h"
-#include "android/net/mdns/aidl/ResolutionInfo.h"
 #include "binder/IServiceManager.h"
 #include "netdutils/InternetAddresses.h"
 #include "netdutils/Stopwatch.h"
@@ -118,6 +112,7 @@ using android::net::MarkMaskParcel;
 using android::net::NativeNetworkConfig;
 using android::net::NativeNetworkType;
 using android::net::NativeVpnType;
+using android::net::NetworkController;
 using android::net::RULE_PRIORITY_BYPASSABLE_VPN_LOCAL_EXCLUSION;
 using android::net::RULE_PRIORITY_BYPASSABLE_VPN_NO_LOCAL_EXCLUSION;
 using android::net::RULE_PRIORITY_DEFAULT_NETWORK;
@@ -140,11 +135,6 @@ using android::net::TetherStatsParcel;
 using android::net::TunInterface;
 using android::net::UidRangeParcel;
 using android::net::UidRanges;
-using android::net::mdns::aidl::DiscoveryInfo;
-using android::net::mdns::aidl::GetAddressInfo;
-using android::net::mdns::aidl::IMDns;
-using android::net::mdns::aidl::RegistrationInfo;
-using android::net::mdns::aidl::ResolutionInfo;
 using android::net::netd::aidl::NativeUidRangeConfig;
 using android::netdutils::getIfaceNames;
 using android::netdutils::IPAddress;
@@ -182,6 +172,14 @@ static const in6_addr V6_ADDR = {
 
 typedef enum { ALL_EXIST, NONE_EXIST } ExistMode;
 
+static void clearQueue(int tunFd) {
+    char buf[4096];
+    int ret;
+    do {
+        ret = read(tunFd, buf, sizeof(buf));
+    } while (ret > 0);
+}
+
 class NetdBinderTest : public NetNativeTestBase {
   public:
     NetdBinderTest() {
@@ -194,6 +192,11 @@ class NetdBinderTest : public NetNativeTestBase {
 
     void SetUp() override {
         ASSERT_NE(nullptr, mNetd.get());
+        // drain tun interfaces before every test.
+        clearQueue(sTun.getFdForTesting());
+        clearQueue(sTun2.getFdForTesting());
+        clearQueue(sTun3.getFdForTesting());
+        clearQueue(sTun4.getFdForTesting());
     }
 
     void TearDown() override {
@@ -210,6 +213,13 @@ class NetdBinderTest : public NetNativeTestBase {
 
     // Static because setting up the tun interface takes about 40ms.
     static void SetUpTestCase() {
+        setBackgroundNetworkingEnabledForUid(TEST_UID1, true);
+        setBackgroundNetworkingEnabledForUid(TEST_UID2, true);
+        setBackgroundNetworkingEnabledForUid(TEST_UID3, true);
+        setBackgroundNetworkingEnabledForUid(TEST_UID4, true);
+        setBackgroundNetworkingEnabledForUid(TEST_UID5, true);
+        setBackgroundNetworkingEnabledForUid(TEST_UID6, true);
+
         ASSERT_EQ(0, sTun.init());
         ASSERT_EQ(0, sTun2.init());
         ASSERT_EQ(0, sTun3.init());
@@ -218,9 +228,20 @@ class NetdBinderTest : public NetNativeTestBase {
         ASSERT_LE(sTun2.name().size(), static_cast<size_t>(IFNAMSIZ));
         ASSERT_LE(sTun3.name().size(), static_cast<size_t>(IFNAMSIZ));
         ASSERT_LE(sTun4.name().size(), static_cast<size_t>(IFNAMSIZ));
+
+        // Wait for initial IPv6 packets (MLD, DAD, and RS) to be sent on tuns, so they can be
+        // drained in SetUp().
+        sleep(1);
     }
 
     static void TearDownTestCase() {
+        setBackgroundNetworkingEnabledForUid(TEST_UID1, false);
+        setBackgroundNetworkingEnabledForUid(TEST_UID2, false);
+        setBackgroundNetworkingEnabledForUid(TEST_UID3, false);
+        setBackgroundNetworkingEnabledForUid(TEST_UID4, false);
+        setBackgroundNetworkingEnabledForUid(TEST_UID5, false);
+        setBackgroundNetworkingEnabledForUid(TEST_UID6, false);
+
         // Closing the socket removes the interface and IP addresses.
         sTun.destroy();
         sTun2.destroy();
@@ -266,6 +287,13 @@ class NetdBinderTest : public NetNativeTestBase {
     static TunInterface sTun2;
     static TunInterface sTun3;
     static TunInterface sTun4;
+
+  private:
+    static void setBackgroundNetworkingEnabledForUid(int uid, bool enabled) {
+        runBinderCommand("connectivity",
+                         StringPrintf("set-background-networking-enabled-for-uid %d %s", uid,
+                                      enabled ? "true" : "false"));
+    }
 };
 
 TunInterface NetdBinderTest::sTun;
@@ -326,8 +354,9 @@ bool testNetworkExistsButCannotConnect(const sp<INetd>& netd, TunInterface& ifc,
     }
 
     const sockaddr_in6 sin6 = {.sin6_family = AF_INET6,
+                               .sin6_port = htons(53),
                                .sin6_addr = {{.u6_addr32 = {htonl(0x20010db8), 0, 0, 0}}},
-                               .sin6_port = 53};
+                              };
     const int s = socket(AF_INET6, SOCK_DGRAM, 0);
     EXPECT_NE(-1, s);
     if (s == -1) return true;
@@ -1015,54 +1044,79 @@ TEST_F(NetdBinderTest, SocketDestroyLinkLocal) {
     const char* kLinkLocalAddress = "fe80::ace:d00d";
 
     const struct addrinfo hints = {
+            .ai_flags = AI_NUMERICHOST,
             .ai_family = AF_INET6,
             .ai_socktype = SOCK_STREAM,
-            .ai_flags = AI_NUMERICHOST,
     };
 
-    binder::Status status = mNetd->interfaceAddAddress(sTun.name(), kLinkLocalAddress, 64);
+    // The ~ in ~64 enables 'nodad' which makes these operations faster and reduces test flakiness.
+    // Unfortunately even with 'nodad' these are still very slightly asynchronous.
+    binder::Status status = mNetd->interfaceAddAddress(sTun.name(), kLinkLocalAddress, ~64);
     EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
-    status = mNetd->interfaceAddAddress(sTun2.name(), kLinkLocalAddress, 64);
+    status = mNetd->interfaceAddAddress(sTun2.name(), kLinkLocalAddress, ~64);
     EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
 
-    // Bind a listening socket to the address on each of two interfaces.
+    // Add IPs to two more interfaces - purely to slow things down a little bit more.
+    status = mNetd->interfaceAddAddress(sTun3.name(), kLinkLocalAddress, ~64);
+    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
+    status = mNetd->interfaceAddAddress(sTun4.name(), kLinkLocalAddress, ~64);
+    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
+
+    // Bind a listening socket to the address on each of the interfaces.
     // The sockets must be open at the same time, because this test checks that SOCK_DESTROY only
     // destroys the sockets on the interface where the address is deleted.
     struct addrinfo* addrinfoList = nullptr;
     int ret = getaddrinfo(kLinkLocalAddress, nullptr, &hints, &addrinfoList);
     ScopedAddrinfo addrinfoCleanup(addrinfoList);
-    ASSERT_EQ(0, ret);
+    ASSERT_EQ(0, ret) << "errno:" << errno;
 
     socklen_t len = addrinfoList[0].ai_addrlen;
     sockaddr_in6 sin6_1 = *reinterpret_cast<sockaddr_in6*>(addrinfoList[0].ai_addr);
     sockaddr_in6 sin6_2 = sin6_1;
+    sockaddr_in6 sin6_3 = sin6_1;
+    sockaddr_in6 sin6_4 = sin6_1;
     sin6_1.sin6_scope_id = if_nametoindex(sTun.name().c_str());
     sin6_2.sin6_scope_id = if_nametoindex(sTun2.name().c_str());
+    sin6_3.sin6_scope_id = if_nametoindex(sTun3.name().c_str());
+    sin6_4.sin6_scope_id = if_nametoindex(sTun4.name().c_str());
 
     int s1 = socket(AF_INET6, SOCK_STREAM | SOCK_NONBLOCK, 0);
-    ASSERT_EQ(0, bind(s1, reinterpret_cast<sockaddr*>(&sin6_1), len));
-    ASSERT_EQ(0, getsockname(s1, reinterpret_cast<sockaddr*>(&sin6_1), &len));
+    ASSERT_EQ(0, bind(s1, reinterpret_cast<sockaddr*>(&sin6_1), len)) << "errno:" << errno;
+    ASSERT_EQ(0, getsockname(s1, reinterpret_cast<sockaddr*>(&sin6_1), &len)) << "errno:" << errno;
     // getsockname technically writes to len, but sizeof(sockaddr_in6) doesn't change.
 
     int s2 = socket(AF_INET6, SOCK_STREAM | SOCK_NONBLOCK, 0);
-    ASSERT_EQ(0, bind(s2, reinterpret_cast<sockaddr*>(&sin6_2), len));
-    ASSERT_EQ(0, getsockname(s2, reinterpret_cast<sockaddr*>(&sin6_2), &len));
+    ASSERT_EQ(0, bind(s2, reinterpret_cast<sockaddr*>(&sin6_2), len)) << "errno:" << errno;
+    ASSERT_EQ(0, getsockname(s2, reinterpret_cast<sockaddr*>(&sin6_2), &len)) << "errno:" << errno;
 
-    ASSERT_EQ(0, listen(s1, 10));
-    ASSERT_EQ(0, listen(s2, 10));
+    int s3 = socket(AF_INET6, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    ASSERT_EQ(0, bind(s3, reinterpret_cast<sockaddr*>(&sin6_3), len)) << "errno:" << errno;
+    ASSERT_EQ(0, getsockname(s3, reinterpret_cast<sockaddr*>(&sin6_3), &len)) << "errno:" << errno;
+
+    int s4 = socket(AF_INET6, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    ASSERT_EQ(0, bind(s4, reinterpret_cast<sockaddr*>(&sin6_4), len)) << "errno:" << errno;
+    ASSERT_EQ(0, getsockname(s4, reinterpret_cast<sockaddr*>(&sin6_4), &len)) << "errno:" << errno;
+
+    ASSERT_EQ(0, listen(s1, 10)) << "errno:" << errno;
+    ASSERT_EQ(0, listen(s2, 10)) << "errno:" << errno;
+    ASSERT_EQ(0, listen(s3, 10)) << "errno:" << errno;
+    ASSERT_EQ(0, listen(s4, 10)) << "errno:" << errno;
 
     // Connect one client socket to each and accept the connections.
     int c1 = socket(AF_INET6, SOCK_STREAM, 0);
     int c2 = socket(AF_INET6, SOCK_STREAM, 0);
-    ASSERT_EQ(0, connect(c1, reinterpret_cast<sockaddr*>(&sin6_1), len));
-    ASSERT_EQ(0, connect(c2, reinterpret_cast<sockaddr*>(&sin6_2), len));
+
+    // ~0.1% chance the kernel isn't quite done yet with adding the IPs.
+    // In such a case these may fail with -1, errno = 101 (ENETUNREACH)
+    ASSERT_EQ(0, connect(c1, reinterpret_cast<sockaddr*>(&sin6_1), len)) << "errno:" << errno;
+    ASSERT_EQ(0, connect(c2, reinterpret_cast<sockaddr*>(&sin6_2), len)) << "errno:" << errno;
     int a1 = accept(s1, nullptr, 0);
-    ASSERT_NE(-1, a1);
+    ASSERT_NE(-1, a1) << "errno:" << errno;
     int a2 = accept(s2, nullptr, 0);
-    ASSERT_NE(-1, a2);
+    ASSERT_NE(-1, a2) << "errno:" << errno;
 
     // Delete the address on sTun2.
-    status = mNetd->interfaceDelAddress(sTun2.name(), kLinkLocalAddress, 64);
+    status = mNetd->interfaceDelAddress(sTun2.name(), kLinkLocalAddress, ~64);
     EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
 
     // The client sockets on sTun2 are closed, but the ones on sTun1 remain open.
@@ -1071,8 +1125,8 @@ TEST_F(NetdBinderTest, SocketDestroyLinkLocal) {
     EXPECT_TRUE(errno == ECONNABORTED || errno == ECONNRESET) << "errno:" << errno;
     // The blocking read above ensures that SOCK_DESTROY has completed.
 
-    EXPECT_EQ(3, write(a1, "foo", 3));
-    EXPECT_EQ(3, read(c1, buf, sizeof(buf)));
+    EXPECT_EQ(3, write(a1, "foo", 3)) << "errno:" << errno;
+    EXPECT_EQ(3, read(c1, buf, sizeof(buf))) << "errno:" << errno;
     EXPECT_EQ(-1, write(a2, "foo", 3));
     EXPECT_TRUE(errno == ECONNABORTED || errno == ECONNRESET) << "errno:" << errno;
 
@@ -1081,6 +1135,17 @@ TEST_F(NetdBinderTest, SocketDestroyLinkLocal) {
     EXPECT_EQ(EAGAIN, errno);
     EXPECT_EQ(-1, accept(s2, nullptr, 0));
     EXPECT_EQ(EINVAL, errno);
+
+    close(a1);
+    close(a2);
+
+    close(c1);
+    close(c2);
+
+    close(s1);
+    close(s2);
+    close(s3);
+    close(s4);
 }
 
 namespace {
@@ -1454,10 +1519,9 @@ static std::vector<std::string> listIptablesRuleByTable(const char* binary, cons
     return runCommand(command);
 }
 
-// TODO: It is a duplicate function, need to remove it
-bool iptablesIdleTimerInterfaceRuleExists(const char* binary, const char* chainName,
-                                          const std::string& expectedInterface,
-                                          const std::string& expectedRule, const char* table) {
+bool iptablesInterfaceRuleExists(const char* binary, const char* chainName,
+                                 const std::string& expectedInterface,
+                                 const std::string& expectedRule, const char* table) {
     std::vector<std::string> rules = listIptablesRuleByTable(binary, table, chainName);
     for (const auto& rule : rules) {
         if (rule.find(expectedInterface) != std::string::npos) {
@@ -1474,10 +1538,10 @@ void expectIdletimerInterfaceRuleExists(const std::string& ifname, int timeout,
     std::string IdletimerRule =
             StringPrintf("timeout:%u label:%s send_nl_msg", timeout, classLabel.c_str());
     for (const auto& binary : {IPTABLES_PATH, IP6TABLES_PATH}) {
-        EXPECT_TRUE(iptablesIdleTimerInterfaceRuleExists(binary, IDLETIMER_RAW_PREROUTING, ifname,
-                                                         IdletimerRule, RAW_TABLE));
-        EXPECT_TRUE(iptablesIdleTimerInterfaceRuleExists(binary, IDLETIMER_MANGLE_POSTROUTING,
-                                                         ifname, IdletimerRule, MANGLE_TABLE));
+        EXPECT_TRUE(iptablesInterfaceRuleExists(binary, IDLETIMER_RAW_PREROUTING, ifname,
+                                                IdletimerRule, RAW_TABLE));
+        EXPECT_TRUE(iptablesInterfaceRuleExists(binary, IDLETIMER_MANGLE_POSTROUTING, ifname,
+                                                IdletimerRule, MANGLE_TABLE));
     }
 }
 
@@ -1486,10 +1550,10 @@ void expectIdletimerInterfaceRuleNotExists(const std::string& ifname, int timeou
     std::string IdletimerRule =
             StringPrintf("timeout:%u label:%s send_nl_msg", timeout, classLabel.c_str());
     for (const auto& binary : {IPTABLES_PATH, IP6TABLES_PATH}) {
-        EXPECT_FALSE(iptablesIdleTimerInterfaceRuleExists(binary, IDLETIMER_RAW_PREROUTING, ifname,
-                                                          IdletimerRule, RAW_TABLE));
-        EXPECT_FALSE(iptablesIdleTimerInterfaceRuleExists(binary, IDLETIMER_MANGLE_POSTROUTING,
-                                                          ifname, IdletimerRule, MANGLE_TABLE));
+        EXPECT_FALSE(iptablesInterfaceRuleExists(binary, IDLETIMER_RAW_PREROUTING, ifname,
+                                                 IdletimerRule, RAW_TABLE));
+        EXPECT_FALSE(iptablesInterfaceRuleExists(binary, IDLETIMER_MANGLE_POSTROUTING, ifname,
+                                                 IdletimerRule, MANGLE_TABLE));
     }
 }
 
@@ -1715,40 +1779,24 @@ void expectNetworkPermissionIpRuleExists(const char* ifName, int permission) {
     expectRuleForV4AndV6(ALL_EXIST, networkPermissionRule);
 }
 
-// TODO: It is a duplicate function, need to remove it
-bool iptablesNetworkPermissionIptablesRuleExists(const char* binary, const char* chainName,
-                                                 const std::string& expectedInterface,
-                                                 const std::string& expectedRule,
-                                                 const char* table) {
-    std::vector<std::string> rules = listIptablesRuleByTable(binary, table, chainName);
-    for (const auto& rule : rules) {
-        if (rule.find(expectedInterface) != std::string::npos) {
-            if (rule.find(expectedRule) != std::string::npos) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
 void expectNetworkPermissionIptablesRuleExists(const char* ifName, int permission) {
     static const char ROUTECTRL_INPUT[] = "routectrl_mangle_INPUT";
     std::string networkIncomingPacketMarkRule = "";
     switch (permission) {
         case INetd::PERMISSION_NONE:
-            networkIncomingPacketMarkRule = "MARK xset 0x3ffdd/0xffefffff";
+            networkIncomingPacketMarkRule = "MARK xset 0x3ffdd/0x7fefffff";
             break;
         case INetd::PERMISSION_NETWORK:
-            networkIncomingPacketMarkRule = "MARK xset 0x7ffdd/0xffefffff";
+            networkIncomingPacketMarkRule = "MARK xset 0x7ffdd/0x7fefffff";
             break;
         case INetd::PERMISSION_SYSTEM:
-            networkIncomingPacketMarkRule = "MARK xset 0xfffdd/0xffefffff";
+            networkIncomingPacketMarkRule = "MARK xset 0xfffdd/0x7fefffff";
             break;
     }
 
     for (const auto& binary : {IPTABLES_PATH, IP6TABLES_PATH}) {
-        EXPECT_TRUE(iptablesNetworkPermissionIptablesRuleExists(
-                binary, ROUTECTRL_INPUT, ifName, networkIncomingPacketMarkRule, MANGLE_TABLE));
+        EXPECT_TRUE(iptablesInterfaceRuleExists(binary, ROUTECTRL_INPUT, ifName,
+                                                networkIncomingPacketMarkRule, MANGLE_TABLE));
     }
 }
 
@@ -2862,21 +2910,6 @@ bool iptablesFirewallInterfaceFirstRuleExists(const char* binary, const char* ch
     return false;
 }
 
-// TODO: It is a duplicate function, need to remove it
-bool iptablesFirewallInterfaceRuleExists(const char* binary, const char* chainName,
-                                         const std::string& expectedInterface,
-                                         const std::string& expectedRule) {
-    std::vector<std::string> rules = listIptablesRuleByTable(binary, FILTER_TABLE, chainName);
-    for (const auto& rule : rules) {
-        if (rule.find(expectedInterface) != std::string::npos) {
-            if (rule.find(expectedRule) != std::string::npos) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
 void expectFirewallInterfaceRuleAllowExists(const std::string& ifname) {
     static const char returnRule[] = "RETURN     all";
     for (const auto& binary : {IPTABLES_PATH, IP6TABLES_PATH}) {
@@ -2890,10 +2923,10 @@ void expectFirewallInterfaceRuleAllowExists(const std::string& ifname) {
 void expectFireWallInterfaceRuleAllowDoesNotExist(const std::string& ifname) {
     static const char returnRule[] = "RETURN     all";
     for (const auto& binary : {IPTABLES_PATH, IP6TABLES_PATH}) {
-        EXPECT_FALSE(
-                iptablesFirewallInterfaceRuleExists(binary, FIREWALL_INPUT, ifname, returnRule));
-        EXPECT_FALSE(
-                iptablesFirewallInterfaceRuleExists(binary, FIREWALL_OUTPUT, ifname, returnRule));
+        EXPECT_FALSE(iptablesInterfaceRuleExists(binary, FIREWALL_INPUT, ifname, returnRule,
+                                                 FILTER_TABLE));
+        EXPECT_FALSE(iptablesInterfaceRuleExists(binary, FIREWALL_OUTPUT, ifname, returnRule,
+                                                 FILTER_TABLE));
     }
 }
 
@@ -2970,7 +3003,7 @@ int ipv4NetmaskToPrefixLength(in_addr_t mask) {
 }
 
 std::string toStdString(const String16& s) {
-    return std::string(String8(s.string()));
+    return std::string(String8(s.c_str()));
 }
 
 android::netdutils::StatusOr<ifreq> ioctlByIfName(const std::string& ifName, unsigned long flag) {
@@ -3701,14 +3734,6 @@ void NetdBinderTest::createVpnAndAppDefaultNetworkWithUid(
 }
 
 namespace {
-
-void clearQueue(int tunFd) {
-    char buf[4096];
-    int ret;
-    do {
-        ret = read(tunFd, buf, sizeof(buf));
-    } while (ret > 0);
-}
 
 void checkDataReceived(int udpSocket, int tunFd, sockaddr* dstAddr, int addrLen) {
     char buf[4096] = {};
@@ -5309,130 +5334,6 @@ TEST_F(PerAppNetworkPermissionsTest, PermissionOnlyAffectsUid) {
     }
 }
 
-class MDnsBinderTest : public NetNativeTestBase {
-  public:
-    class TestMDnsListener : public android::net::mdns::aidl::BnMDnsEventListener {
-      public:
-        Status onServiceRegistrationStatus(const RegistrationInfo& /*status*/) override {
-            // no-op
-            return Status::ok();
-        }
-        Status onServiceDiscoveryStatus(const DiscoveryInfo& /*status*/) override {
-            // no-op
-            return Status::ok();
-        }
-        Status onServiceResolutionStatus(const ResolutionInfo& /*status*/) override {
-            // no-op
-            return Status::ok();
-        }
-        Status onGettingServiceAddressStatus(const GetAddressInfo& status) override {
-            if (status.id == mOperationId) {
-                std::lock_guard lock(mCvMutex);
-                mCv.notify_one();
-            }
-            return Status::ok();
-        }
-        std::condition_variable& getCv() { return mCv; }
-        std::mutex& getCvMutex() { return mCvMutex; }
-        void setOperationId(int operationId) { mOperationId = operationId; }
-
-      private:
-        std::mutex mCvMutex;
-        std::condition_variable mCv;
-        int mOperationId;
-    };
-
-    MDnsBinderTest() {
-        sp<IServiceManager> sm = android::defaultServiceManager();
-        sp<IBinder> binder = sm->getService(String16("mdns"));
-        if (binder != nullptr) {
-            mMDns = android::interface_cast<IMDns>(binder);
-        }
-    }
-
-    void SetUp() override {
-        ASSERT_NE(nullptr, mMDns.get());
-        // Start the daemon for mdns operations.
-        mDaemonStarted = mMDns->startDaemon().isOk();
-    }
-
-    void TearDown() override {
-        if (mDaemonStarted) mMDns->stopDaemon();
-    }
-
-    std::cv_status getServiceAddress(int operationId, const sp<TestMDnsListener>& listener);
-
-  protected:
-    sp<IMDns> mMDns;
-
-  private:
-    bool mDaemonStarted = false;
-};
-
-std::cv_status MDnsBinderTest::getServiceAddress(int operationId,
-                                                 const sp<TestMDnsListener>& listener) {
-    GetAddressInfo info;
-    info.id = operationId;
-    info.hostname = "Android.local";
-    info.interfaceIdx = 0;
-    binder::Status status = mMDns->getServiceAddress(info);
-    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
-
-    auto& cv = listener->getCv();
-    auto& cvMutex = listener->getCvMutex();
-    std::unique_lock lock(cvMutex);
-    // Wait for a long time to prevent test flaky.
-    return cv.wait_for(lock, std::chrono::milliseconds(2500));
-}
-
-TEST_F(MDnsBinderTest, EventListenerTest) {
-    SKIP_WITH_HWASAN;  // TODO(b/253513842): Re-enable.
-    // Start the Binder thread pool.
-    android::ProcessState::self()->startThreadPool();
-
-    // Register a null listener.
-    binder::Status status = mMDns->registerEventListener(nullptr);
-    EXPECT_FALSE(status.isOk());
-
-    // Unregister a null listener.
-    status = mMDns->unregisterEventListener(nullptr);
-    EXPECT_FALSE(status.isOk());
-
-    // Register a test listener
-    auto testListener = android::sp<TestMDnsListener>::make();
-    status = mMDns->registerEventListener(testListener);
-    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
-
-    // Register the duplicated listener
-    status = mMDns->registerEventListener(testListener);
-    EXPECT_FALSE(status.isOk());
-
-    // Verify the listener can receive callback.
-    int id = arc4random_uniform(10000);  // use random number
-    testListener->setOperationId(id);
-    EXPECT_EQ(std::cv_status::no_timeout, getServiceAddress(id, testListener));
-    // Stop getting address operation to release the service reference on MDnsSd
-    status = mMDns->stopOperation(id);
-    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
-
-    // Unregister the test listener
-    status = mMDns->unregisterEventListener(testListener);
-    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
-
-    // Verify the listener can not receive callback.
-    testListener->setOperationId(id + 1);
-    EXPECT_EQ(std::cv_status::timeout, getServiceAddress(id + 1, testListener));
-    // Stop getting address operation to release the service reference on MDnsSd
-    status = mMDns->stopOperation(id + 1);
-    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
-
-    // Registering and unregistering the listener again should work.
-    status = mMDns->registerEventListener(testListener);
-    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
-    status = mMDns->unregisterEventListener(testListener);
-    EXPECT_TRUE(status.isOk()) << status.exceptionMessage();
-}
-
 // Creates a system default network and 3 enterprise networks for two profiles. Check if network
 // selection in compliance with network allow list settings.
 //
@@ -5574,5 +5475,286 @@ TEST_F(NetdBinderTest, PerProfileNetworkPermission) {
             ScopedUidChange scopedUidChange(uid);
             EXPECT_EQ(0, setNetworkForProcess(ENTERPRISE_NETID_1));
         }
+    }
+}
+
+namespace {
+
+class ScopedIfaceRouteOperation {
+    using IfaceCmd = std::tuple<int32_t, const std::string>;
+    using RouteCmd = std::tuple<int32_t, const std::string, const std::string, const std::string>;
+
+    // Helper type for the visitor.
+    template <class... Ts>
+    struct overloaded : Ts... {
+        using Ts::operator()...;
+    };
+    // Explicit deduction guide
+    template <class... Ts>
+    overloaded(Ts...) -> overloaded<Ts...>;
+
+  public:
+    ScopedIfaceRouteOperation(sp<INetd> netd) : mNetd(netd) {}
+
+    binder::Status addInterface(int32_t netId, const std::string& iface) {
+        const binder::Status status = mNetd->networkAddInterface(netId, iface);
+        if (status.isOk()) {
+            mCmds.push_back(std::make_tuple(netId, iface));
+        }
+        return status;
+    }
+
+    binder::Status addRoute(int32_t netId, const std::string& iface, const std::string& destination,
+                            const std::string& nextHop) {
+        const binder::Status status = mNetd->networkAddRoute(netId, iface, destination, nextHop);
+        if (status.isOk()) {
+            mCmds.push_back(std::make_tuple(netId, iface, destination, nextHop));
+        }
+        return status;
+    }
+
+    ~ScopedIfaceRouteOperation() {
+        // Remove routes and interfaces in reverse order.
+        for (std::vector<std::variant<IfaceCmd, RouteCmd>>::reverse_iterator iter = mCmds.rbegin();
+             iter != mCmds.rend(); iter++) {
+            // Do corresponding works according to the type of the command pointed by the iter.
+            std::visit(overloaded{
+                               [&](IfaceCmd& cmd) {
+                                   mNetd->networkRemoveInterface(std::get<0>(cmd),
+                                                                 std::get<1>(cmd));
+                               },
+                               [&](RouteCmd& cmd) {
+                                   mNetd->networkRemoveRoute(std::get<0>(cmd), std::get<1>(cmd),
+                                                             std::get<2>(cmd), std::get<3>(cmd));
+                               },
+                       },
+                       *iter);
+        }
+    }
+
+  private:
+    sp<INetd> mNetd;
+    std::vector<std::variant<IfaceCmd, RouteCmd>> mCmds;
+};
+
+std::optional<sockaddr_in6> getV6LinkLocalAddrFromIfIndex(const unsigned ifIndex) {
+    struct ifaddrs* ifAddrList = nullptr;
+    sockaddr_in6 linkLocalAddr{};
+
+    if (getifaddrs(&ifAddrList) == -1) return std::nullopt;
+
+    for (struct ifaddrs* ifa = ifAddrList; ifa != nullptr; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr != nullptr && ifa->ifa_addr->sa_family == AF_INET6) {
+            struct sockaddr_in6* addr = reinterpret_cast<struct sockaddr_in6*>(ifa->ifa_addr);
+            if (addr->sin6_scope_id == ifIndex && IN6_IS_ADDR_LINKLOCAL(&(addr->sin6_addr))) {
+                linkLocalAddr = *addr;
+                freeifaddrs(ifAddrList);
+                return linkLocalAddr;
+            }
+        }
+    }
+
+    freeifaddrs(ifAddrList);
+    return std::nullopt;
+}
+
+int retry_bind(int sockfd, struct sockaddr* addr, socklen_t addrlen) {
+    int ret = 0;
+
+    for (int retry = 0; retry < 10; retry++) {
+        ret = bind(sockfd, addr, addrlen);
+        if (ret == 0 || (ret == -1 && errno != EADDRNOTAVAIL)) {
+            break;
+        }
+        usleep(100 * 1000);
+    }
+    return ret;
+}
+
+}  // namespace
+
+TEST_F(NetdBinderTest, V6LinkLocalFwmark) {
+    createAndSetDefaultNetwork(TEST_NETID1, sTun.name());
+
+    // Add an interface and route for Local network.
+    ScopedIfaceRouteOperation scopedOperation(mNetd);
+    EXPECT_TRUE(scopedOperation.addInterface(NetworkController::LOCAL_NET_ID, sTun2.name()).isOk());
+    EXPECT_TRUE(
+            scopedOperation.addRoute(NetworkController::LOCAL_NET_ID, sTun2.name(), "fe80::/64", "")
+                    .isOk());
+
+    // Bind a listening socket to the auto assigned link-local address of the Local network.
+    std::optional<sockaddr_in6> v6LinkLocalAddr_1 = getV6LinkLocalAddrFromIfIndex(sTun2.ifindex());
+    ASSERT_TRUE(v6LinkLocalAddr_1.has_value()) << "errno:" << errno;
+    socklen_t len = sizeof(v6LinkLocalAddr_1.value());
+    unique_fd s1(socket(AF_INET6, SOCK_STREAM | SOCK_NONBLOCK, 0));
+    ASSERT_EQ(0, bind(s1, reinterpret_cast<sockaddr*>(&v6LinkLocalAddr_1.value()), len))
+            << "errno:" << errno;
+    ASSERT_EQ(0, getsockname(s1, reinterpret_cast<sockaddr*>(&v6LinkLocalAddr_1.value()), &len))
+            << "errno:" << errno;
+    ASSERT_EQ(0, listen(s1, 10)) << "errno:" << errno;
+
+    // Add another v6 link-local address.
+    const char* v6LinkLocalAddr_2 = "fe80::ace:d00d";
+    EXPECT_TRUE(mNetd->interfaceAddAddress(sTun2.name(), v6LinkLocalAddr_2, 64).isOk());
+
+    // Bind a client socket on the new added link-local address and connect it to the listen socket.
+    // Have different src and dst addresses is needed because we want to test the behavior of fwmark
+    // and destroying sockets. The same src and dst addresses are treated as loopbacks and won't be
+    // destroyed in any way.
+    const struct addrinfo hints = {
+            .ai_flags = AI_NUMERICHOST,
+            .ai_family = AF_INET6,
+            .ai_socktype = SOCK_STREAM,
+    };
+    struct addrinfo* addrinfoList = nullptr;
+    int ret = getaddrinfo(v6LinkLocalAddr_2, nullptr, &hints, &addrinfoList);
+    ScopedAddrinfo addrinfoCleanup(addrinfoList);
+    ASSERT_EQ(0, ret) << "errno:" << errno;
+
+    len = addrinfoList[0].ai_addrlen;
+    sockaddr_in6 sin6 = *reinterpret_cast<sockaddr_in6*>(addrinfoList[0].ai_addr);
+    sin6.sin6_scope_id = sTun2.ifindex();
+
+    unique_fd c1(socket(AF_INET6, SOCK_STREAM, 0));
+    // Retry in case the newly added address is not ready yet.
+    ASSERT_EQ(0, retry_bind(c1, reinterpret_cast<sockaddr*>(&sin6), len)) << "errno:" << errno;
+    ASSERT_EQ(0, getsockname(c1, reinterpret_cast<sockaddr*>(&sin6), &len)) << "errno:" << errno;
+    ASSERT_EQ(0, connect(c1, reinterpret_cast<sockaddr*>(&v6LinkLocalAddr_1.value()), len))
+            << "errno:" << errno;
+
+    // Verify netId in fwmark.
+    Fwmark fwmark;
+    socklen_t fwmarkLen = sizeof(fwmark.intValue);
+    EXPECT_EQ(0, getsockopt(c1, SOL_SOCKET, SO_MARK, &fwmark.intValue, &fwmarkLen));
+    EXPECT_EQ((unsigned)NetworkController::LOCAL_NET_ID, fwmark.netId);
+
+    unique_fd a1(accept(s1, nullptr, 0));
+    ASSERT_NE(-1, a1) << "errno:" << errno;
+    EXPECT_EQ(0, getsockopt(a1, SOL_SOCKET, SO_MARK, &fwmark.intValue, &fwmarkLen));
+    // TODO: Fix fwmark on the accept socket?
+    fwmark.netId = NetworkController::LOCAL_NET_ID;
+    EXPECT_EQ(0, setsockopt(a1, SOL_SOCKET, SO_MARK, &fwmark.intValue, sizeof(fwmark.intValue)));
+
+    // Change permission on the default network. Client socket should not be destroyed.
+    EXPECT_TRUE(
+            mNetd->networkSetPermissionForNetwork(TEST_NETID1, INetd::PERMISSION_NETWORK).isOk());
+
+    char buf[1024] = {};
+    EXPECT_EQ(3, write(a1, "foo", 3)) << "errno:" << errno;
+    EXPECT_EQ(3, read(c1, buf, sizeof(buf))) << "errno:" << errno;
+}
+
+/**
+ * This test sets up three networks:
+ * - SYSTEM_DEFAULT_NETID -> sTun
+ * - OTHER_NETID -> sTun2
+ * - VPN_NETID -> sTun3
+ */
+TEST_F(NetdBinderTest, BypassVpnWithNetId) {
+    static constexpr unsigned OTHER_NETID = TEST_NETID2;
+    static const sockaddr_in6 addr = {
+            .sin6_family = AF_INET6,
+            .sin6_port = 42,
+            .sin6_addr = V6_ADDR,
+    };
+    createVpnAndOtherPhysicalNetwork(SYSTEM_DEFAULT_NETID, OTHER_NETID, VPN_NETID, true /*secure*/);
+    ASSERT_TRUE(mNetd->networkAddUidRanges(VPN_NETID, {makeUidRangeParcel(TEST_UID1)}).isOk());
+
+    {
+        ScopedUidChange change(TEST_UID1);
+        unique_fd sock(socket(AF_INET6, SOCK_DGRAM, 0));
+        // No network selected for the socket: data is received on VPN network.
+        checkDataReceived(sock, sTun3.getFdForTesting(), (sockaddr*)&addr, sizeof(addr));
+    }
+
+    {
+        ScopedUidChange change(TEST_UID1);
+        unique_fd sock(socket(AF_INET6, SOCK_DGRAM, 0));
+        EXPECT_EQ(0, setNetworkForSocket(VPN_NETID, sock));
+        EXPECT_EQ(-EPERM, setNetworkForSocket(SYSTEM_DEFAULT_NETID, sock));
+        EXPECT_EQ(-EPERM, setNetworkForSocket(OTHER_NETID, sock));
+
+        // No permission to use OTHER_NETID: data is received on VPN network.
+        checkDataReceived(sock, sTun3.getFdForTesting(), (sockaddr*)&addr, sizeof(addr));
+    }
+
+    mNetd->networkAllowBypassVpnOnNetwork(true /* allow */, TEST_UID1, OTHER_NETID);
+    auto guard = android::base::make_scope_guard([this] {
+        mNetd->networkAllowBypassVpnOnNetwork(false /* allow */, TEST_UID1, OTHER_NETID);
+    });
+
+    {
+        ScopedUidChange change(TEST_UID1);
+        unique_fd sock(socket(AF_INET6, SOCK_DGRAM, 0));
+        EXPECT_EQ(0, setNetworkForSocket(VPN_NETID, sock));
+        EXPECT_EQ(-EPERM, setNetworkForSocket(SYSTEM_DEFAULT_NETID, sock));
+        EXPECT_EQ(0, setNetworkForSocket(OTHER_NETID, sock));
+
+        // Permission to use OTHER_NETID and OTHER_NETID is selected for socket: data is received on
+        // OTHER network.
+        checkDataReceived(sock, sTun2.getFdForTesting(), (sockaddr*)&addr, sizeof(addr));
+    }
+}
+
+/**
+ * This test sets up three networks:
+ * - SYSTEM_DEFAULT_NETID -> sTun
+ * - OTHER_NETID -> sTun2
+ * - VPN_NETID -> sTun3
+ */
+TEST_F(NetdBinderTest, BypassVpnWithNetIdOverlappingRules) {
+    static constexpr unsigned OTHER_NETID = TEST_NETID2;
+    createVpnAndOtherPhysicalNetwork(SYSTEM_DEFAULT_NETID, OTHER_NETID, VPN_NETID, true /*secure*/);
+    ASSERT_TRUE(mNetd->networkAddUidRanges(VPN_NETID, {makeUidRangeParcel(TEST_UID1)}).isOk());
+
+    // Check default network permissions.
+    {
+        ScopedUidChange change(TEST_UID1);
+        unique_fd sock(socket(AF_INET6, SOCK_DGRAM, 0));
+        EXPECT_EQ(0, setNetworkForSocket(VPN_NETID, sock));
+        EXPECT_EQ(-EPERM, setNetworkForSocket(SYSTEM_DEFAULT_NETID, sock));
+        EXPECT_EQ(-EPERM, setNetworkForSocket(OTHER_NETID, sock));
+    }
+
+    // Careful: only use EXPECT_*() so the test cleans up after itself on failure.
+    // Exempt TEST_UID1 from VPN on OTHER_NETID
+    mNetd->networkAllowBypassVpnOnNetwork(true /* allow */, TEST_UID1, OTHER_NETID);
+    {
+        ScopedUidChange change(TEST_UID1);
+        unique_fd sock(socket(AF_INET6, SOCK_DGRAM, 0));
+        EXPECT_EQ(0, setNetworkForSocket(VPN_NETID, sock));
+        EXPECT_EQ(-EPERM, setNetworkForSocket(SYSTEM_DEFAULT_NETID, sock));
+        EXPECT_EQ(0, setNetworkForSocket(OTHER_NETID, sock));
+    }
+
+    // Exempt TEST_UID1 from VPN on all networks.
+    mNetd->networkSetProtectAllow(TEST_UID1);
+    {
+        ScopedUidChange change(TEST_UID1);
+        unique_fd sock(socket(AF_INET6, SOCK_DGRAM, 0));
+        EXPECT_EQ(0, setNetworkForSocket(VPN_NETID, sock));
+        EXPECT_EQ(0, setNetworkForSocket(SYSTEM_DEFAULT_NETID, sock));
+        EXPECT_EQ(0, setNetworkForSocket(OTHER_NETID, sock));
+    }
+
+    // Remove network-specific exemption
+    mNetd->networkAllowBypassVpnOnNetwork(false /* allow */, TEST_UID1, OTHER_NETID);
+    {
+        ScopedUidChange change(TEST_UID1);
+        unique_fd sock(socket(AF_INET6, SOCK_DGRAM, 0));
+        EXPECT_EQ(0, setNetworkForSocket(VPN_NETID, sock));
+        EXPECT_EQ(0, setNetworkForSocket(SYSTEM_DEFAULT_NETID, sock));
+        EXPECT_EQ(0, setNetworkForSocket(OTHER_NETID, sock));
+    }
+
+    // Remove global exemption
+    mNetd->networkSetProtectDeny(TEST_UID1);
+    {
+        ScopedUidChange change(TEST_UID1);
+        unique_fd sock(socket(AF_INET6, SOCK_DGRAM, 0));
+        EXPECT_EQ(0, setNetworkForSocket(VPN_NETID, sock));
+        EXPECT_EQ(-EPERM, setNetworkForSocket(SYSTEM_DEFAULT_NETID, sock));
+        EXPECT_EQ(-EPERM, setNetworkForSocket(OTHER_NETID, sock));
     }
 }

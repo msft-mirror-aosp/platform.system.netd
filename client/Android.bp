@@ -13,6 +13,7 @@
 // limitations under the License.
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     // See: http://go/android-license-faq
     // A large-scale-change added 'default_applicable_licenses' to import
     // all of the 'license_kinds' from "system_netd_license"
@@ -21,8 +22,8 @@ package {
     default_applicable_licenses: ["system_netd_license"],
 }
 
-cc_library {
-    name: "libnetd_client",
+cc_defaults {
+    name: "libnetd_client_defaults",
     srcs: [
         "FwmarkClient.cpp",
         "NetdClient.cpp",
@@ -38,9 +39,20 @@ cc_library {
     sanitize: {
         cfi: true,
     },
+}
+
+cc_library_shared {
+    name: "libnetd_client",
+    defaults: ["libnetd_client_defaults"],
     apex_available: [
         "//apex_available:platform",
     ],
+}
+
+cc_library_static {
+    name: "libnetd_client_static_for_test",
+    defaults: ["libnetd_client_defaults"],
+    visibility: ["//visibility:private"],
 }
 
 cc_test {
@@ -56,17 +68,17 @@ cc_test {
     static_libs: [
         "libgmock",
         "libbase",
-        "libnetd_client",
+        "libnetd_client_static_for_test",
     ],
     sanitize: {
         address: false,
-        recover: [ "all" ],
+        recover: ["all"],
     },
 }
 
 cc_test {
     name: "netdclient_root_test",
-    require_root: true,  // for ScopedUidChange
+    require_root: true, // for ScopedUidChange
     srcs: [
         "NetdClientRootTest.cpp",
     ],
@@ -80,11 +92,11 @@ cc_test {
     ],
     static_libs: [
         "libbase",
-        "libnetd_client",
+        "libnetd_client_static_for_test",
         "libnetd_test_utils",
     ],
     sanitize: {
         address: false,
-        recover: [ "all" ],
+        recover: ["all"],
     },
 }

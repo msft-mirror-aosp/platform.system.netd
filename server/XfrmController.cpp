@@ -23,12 +23,10 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define __STDC_FORMAT_MACROS
-#include <inttypes.h>
 
 #include <arpa/inet.h>
 #include <net/if.h>
@@ -415,7 +413,7 @@ netdutils::Status XfrmController::Init() {
 netdutils::Status XfrmController::flushInterfaces() {
     const auto& ifaces = getIfaceNames();
     RETURN_IF_NOT_OK(ifaces);
-    const String8 ifPrefix8 = String8(INetd::IPSEC_INTERFACE_PREFIX().string());
+    const String8 ifPrefix8 = String8(INetd::IPSEC_INTERFACE_PREFIX().c_str());
 
     for (const std::string& iface : ifaces.value()) {
         netdutils::Status status;

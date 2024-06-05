@@ -29,7 +29,8 @@ union Fwmark {
         bool protectedFromVpn   :  1;
         Permission permission   :  2;
         bool uidBillingDone     :  1;
-        unsigned reserved       : 10;
+        unsigned reserved       :  8;
+        unsigned vendor         :  2;  // reserved for vendor
         bool ingress_cpu_wakeup :  1;  // reserved for config_networkWakeupPacketMark/Mask
     };
     constexpr Fwmark() : intValue(0) {}
@@ -37,6 +38,12 @@ union Fwmark {
     static inline uint32_t getUidBillingMask() {
         Fwmark m;
         m.uidBillingDone = true;
+        return m.intValue;
+    }
+
+    static inline uint32_t getIngressCpuWakeupMask() {
+        Fwmark m;
+        m.ingress_cpu_wakeup = true;
         return m.intValue;
     }
 };

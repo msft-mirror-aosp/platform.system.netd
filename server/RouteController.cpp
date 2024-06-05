@@ -219,13 +219,16 @@ void RouteController::updateTableNamesFile() {
     addTableName(ROUTE_TABLE_LEGACY_SYSTEM,  ROUTE_TABLE_NAME_LEGACY_SYSTEM,  &contents);
 
     std::lock_guard lock(sInterfaceToTableLock);
-    for (const auto& [ifName, ifIndex] : sInterfaceToTable) {
-        addTableName(ifIndex, ifName, &contents);
+    for (const auto& [ifName, table] : sInterfaceToTable) {
+        if (table <= ROUTE_TABLE_OFFSET_FROM_INDEX) {
+            continue;
+        }
+        addTableName(table, ifName, &contents);
         // Add table for the local route of the network. It's expected to be used for excluding the
         // local traffic in the VPN network.
         // Start from ROUTE_TABLE_OFFSET_FROM_INDEX_FOR_LOCAL plus with the interface table index.
         uint32_t offset = ROUTE_TABLE_OFFSET_FROM_INDEX_FOR_LOCAL - ROUTE_TABLE_OFFSET_FROM_INDEX;
-        addTableName(offset + ifIndex, ifName + INTERFACE_LOCAL_SUFFIX, &contents);
+        addTableName(offset + table, ifName + INTERFACE_LOCAL_SUFFIX, &contents);
     }
 
     if (!WriteStringToFile(contents, RT_TABLES_PATH, RT_TABLES_MODE, AID_SYSTEM, AID_WIFI)) {
@@ -486,11 +489,11 @@ int modifyIncomingPacketMark(unsigned netId, const char* interface, Permission p
     fwmark.protectedFromVpn = true;
     fwmark.permission = permission;
 
-    const uint32_t mask = ~Fwmark::getUidBillingMask();
+    const uint32_t mask = Fwmark::getUidBillingMask() | Fwmark::getIngressCpuWakeupMask();
 
     std::string cmd = StringPrintf(
         "%s %s -i %s -j MARK --set-mark 0x%x/0x%x", add ? "-A" : "-D",
-        RouteController::LOCAL_MANGLE_INPUT, interface, fwmark.intValue, mask);
+        RouteController::LOCAL_MANGLE_INPUT, interface, fwmark.intValue, ~mask);
     if (RouteController::iptablesRestoreCommandFunction(V4V6, "mangle", cmd, nullptr) != 0) {
         ALOGE("failed to change iptables rule that sets incoming packet mark");
         return -EREMOTEIO;

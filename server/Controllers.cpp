@@ -26,6 +26,7 @@
 #define LOG_TAG "Netd"
 #include <log/log.h>
 
+#include "ConnmarkFlags.h"
 #include "Controllers.h"
 #include "IdletimerController.h"
 #include "NetworkController.h"
@@ -36,6 +37,7 @@
 namespace android {
 namespace net {
 
+using android::base::Join;
 using android::base::StringAppendF;
 using android::base::StringPrintf;
 using android::netdutils::Stopwatch;
@@ -47,6 +49,9 @@ netdutils::Log gLog("netd");
 netdutils::Log gUnsolicitedLog("netdUnsolicited");
 
 namespace {
+
+static constexpr char CONNMARK_MANGLE_INPUT[] = "connmark_mangle_INPUT";
+static constexpr char CONNMARK_MANGLE_OUTPUT[] = "connmark_mangle_OUTPUT";
 
 /**
  * List of module chains to be created, along with explicit ordering. ORDERING
@@ -86,12 +91,17 @@ static const std::vector<const char*> MANGLE_POSTROUTING = {
 };
 
 static const std::vector<const char*> MANGLE_INPUT = {
+        CONNMARK_MANGLE_INPUT,
         WakeupController::LOCAL_MANGLE_INPUT,
         RouteController::LOCAL_MANGLE_INPUT,
 };
 
 static const std::vector<const char*> MANGLE_FORWARD = {
         TetherController::LOCAL_MANGLE_FORWARD,
+};
+
+static const std::vector<const char*> MANGLE_OUTPUT = {
+        CONNMARK_MANGLE_OUTPUT,
 };
 
 static const std::vector<const char*> NAT_PREROUTING = {
@@ -226,6 +236,7 @@ void Controllers::initChildChains() {
     createChildChains(V4V6, "raw", "PREROUTING", RAW_PREROUTING, true);
     createChildChains(V4V6, "mangle", "FORWARD", MANGLE_FORWARD, true);
     createChildChains(V4V6, "mangle", "INPUT", MANGLE_INPUT, true);
+    createChildChains(V4V6, "mangle", "OUTPUT", MANGLE_OUTPUT, true);
     createChildChains(V4, "nat", "PREROUTING", NAT_PREROUTING, true);
     createChildChains(V4, "nat", "POSTROUTING", NAT_POSTROUTING, true);
 
@@ -233,6 +244,30 @@ void Controllers::initChildChains() {
     createChildChains(V6, "filter", "OUTPUT", FILTER_OUTPUT, false);
     createChildChains(V4, "mangle", "POSTROUTING", MANGLE_POSTROUTING, false);
     createChildChains(V6, "mangle", "POSTROUTING", MANGLE_POSTROUTING, false);
+}
+
+static void setupConnmarkIptablesHooks() {
+    // Rules to store parts of the fwmark (namely: netId, explicitlySelected, protectedFromVpn,
+    // permission) in connmark.
+    // Only saves the mark if no mark has been set before.
+    static_assert(std::string_view(CONNMARK_MANGLE_INPUT) == "connmark_mangle_INPUT");
+    static_assert(std::string_view(CONNMARK_MANGLE_OUTPUT) == "connmark_mangle_OUTPUT");
+    static_assert(CONNMARK_FWMARK_MASK == 0x000FFFFF);
+    const std::string cmd(
+            // CONNMARK:
+            // --save-mark [--nfmask nfmask] [--ctmask ctmask]
+            // Copy the packet mark (nfmark) to the connection mark (ctmark) using the given
+            // masks. The new nfmark value is determined as follows:
+            // ctmark = (ctmark & ~ctmask) ^ (nfmark & nfmask)
+            // i.e. ctmask defines what bits to clear and nfmask what bits of the nfmark to
+            // XOR into the ctmark. ctmask and nfmask default to 0xFFFFFFFF.
+            "*mangle\n"
+            "-A connmark_mangle_INPUT -m connmark --mark 0/0x000FFFFF "
+            "-j CONNMARK --save-mark --ctmask 0x000FFFFF --nfmask 0x000FFFFF\n"
+            "-A connmark_mangle_OUTPUT -m connmark --mark 0/0x000FFFFF "
+            "-j CONNMARK --save-mark --ctmask 0x000FFFFF --nfmask 0x000FFFFF\n"
+            "COMMIT\n");
+    execIptablesRestore(V4V6, cmd);
 }
 
 void Controllers::initIptablesRules() {
@@ -271,6 +306,12 @@ void Controllers::initIptablesRules() {
      */
     strictCtrl.setupIptablesHooks();
     gLog.info("Setting up StrictController hooks: %" PRId64 "us", s.getTimeAndResetUs());
+
+    /*
+     * Add rules for storing netid in connmark.
+     */
+    setupConnmarkIptablesHooks();
+    gLog.info("Setting up connmark hooks: %" PRId64 "us", s.getTimeAndResetUs());
 }
 
 void Controllers::init() {
