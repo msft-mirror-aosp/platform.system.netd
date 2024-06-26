@@ -17,11 +17,13 @@
 
 #include <unistd.h>
 
+#include <android-base/properties.h>
 #include <gtest/gtest.h>
 #include <vintf/VintfObject.h>
 
 #include <fstream>
 #include <string>
+#include <unordered_set>
 
 #include "bpf/KernelUtils.h"
 
@@ -30,12 +32,26 @@ namespace net {
 
 namespace {
 
+using ::android::base::GetProperty;
 using ::android::vintf::RuntimeInfo;
 using ::android::vintf::VintfObject;
 
 class KernelConfigVerifier final {
   public:
-    KernelConfigVerifier() : mRuntimeInfo(VintfObject::GetRuntimeInfo()) {}
+    KernelConfigVerifier() : mRuntimeInfo(VintfObject::GetRuntimeInfo()) {
+        std::ifstream procModules("/proc/modules", std::ios::in);
+        if (!procModules) {
+            // Return early, this will likely cause the test to fail. However, gtest FAIL() cannot
+            // be used outside of an actual test method.
+            return;
+        }
+        std::string modline;
+        while (std::getline(procModules, modline)) {
+            // modline contains a single line read from /proc/modules. For example:
+            // virtio_snd 45056 0 - Live 0x0000000000000000 (E)
+            mLoadedModules.emplace(modline.substr(0, modline.find(' ')));
+        }
+    }
 
     bool hasOption(const std::string& option) const {
         const auto& configMap = mRuntimeInfo->kernelConfigs();
@@ -55,8 +71,13 @@ class KernelConfigVerifier final {
         return false;
     }
 
+    bool isAvailable(const std::string& option, const std::string& koName) const {
+        return hasOption(option) || mLoadedModules.contains(koName);
+    }
+
   private:
     std::shared_ptr<const RuntimeInfo> mRuntimeInfo;
+    std::unordered_set<std::string> mLoadedModules;
 };
 
 }  // namespace
