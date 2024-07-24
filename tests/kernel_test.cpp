@@ -15,6 +15,8 @@
  *
  */
 
+#include <unistd.h>
+
 #include <gtest/gtest.h>
 #include <vintf/VintfObject.h>
 
@@ -74,6 +76,11 @@ TEST(KernelTest, TestRateLimitingSupport) {
     EXPECT_TRUE(configVerifier.hasOption("CONFIG_BPF_JIT"));
 }
 
+TEST(KernelTest, TestRequireBpfUnprivDefaultOn) {
+    KernelConfigVerifier configVerifier;
+    EXPECT_FALSE(configVerifier.hasOption("CONFIG_BPF_UNPRIV_DEFAULT_OFF"));
+}
+
 TEST(KernelTest, TestBpfJitAlwaysOn) {
     // 32-bit arm & x86 kernels aren't capable of JIT-ing all of our BPF code,
     if (bpf::isKernel32Bit()) GTEST_SKIP() << "Exempt on 32-bit kernel.";
@@ -103,24 +110,28 @@ TEST(KernelTest, TestKernel419) {
     ASSERT_TRUE(bpf::isAtLeastKernelVersion(4, 19, 0));
 }
 
-static bool isKernel(unsigned major, unsigned minor) {
-    return bpf::isAtLeastKernelVersion(major, minor, 0)
-        && !bpf::isAtLeastKernelVersion(major, minor + 1, 0);
+// RiscV is not yet supported: make it fail VTS.
+TEST(KernelTest, TestNotRiscV) {
+    ASSERT_TRUE(!bpf::isRiscV());
 }
 
 TEST(KernelTest, TestIsLTS) {
-    ASSERT_TRUE(
-        isKernel(4, 19) ||
-        isKernel(5, 4) ||
-        isKernel(5, 10) ||
-        isKernel(5, 15) ||
-        isKernel(6, 1) ||
-        isKernel(6, 6));
+    ASSERT_TRUE(bpf::isLtsKernel());
+}
+
+static bool exists(const char* filename) {
+    return !access(filename, F_OK);
+}
+
+static bool isGSI() {
+    // From //system/gsid/libgsi.cpp IsGsiRunning()
+    return exists("/metadata/gsi/dsu/booted");
 }
 
 #define ifIsKernelThenMinLTS(major, minor, sub) do { \
-  if (!isKernel((major), (minor))) GTEST_SKIP() << "Not for this kernel major/minor version."; \
-  ASSERT_TRUE(bpf::isAtLeastKernelVersion((major), (minor), (sub))); \
+    if (isGSI()) GTEST_SKIP() << "Test is meaningless on GSI."; \
+    if (!bpf::isKernelVersion((major), (minor))) GTEST_SKIP() << "Not for this LTS ver."; \
+    ASSERT_TRUE(bpf::isAtLeastKernelVersion((major), (minor), (sub))); \
 } while (0)
 
 TEST(KernelTest, TestMinRequiredLTS_4_19) { ifIsKernelThenMinLTS(4, 19, 236); }
@@ -129,6 +140,12 @@ TEST(KernelTest, TestMinRequiredLTS_5_10) { ifIsKernelThenMinLTS(5, 10, 199); }
 TEST(KernelTest, TestMinRequiredLTS_5_15) { ifIsKernelThenMinLTS(5, 15, 136); }
 TEST(KernelTest, TestMinRequiredLTS_6_1)  { ifIsKernelThenMinLTS(6, 1, 57); }
 TEST(KernelTest, TestMinRequiredLTS_6_6)  { ifIsKernelThenMinLTS(6, 6, 0); }
+
+TEST(KernelTest, TestSupportsAcceptRaMinLft) {
+    if (isGSI()) GTEST_SKIP() << "Meaningless on GSI due to ancient kernels.";
+    if (!bpf::isAtLeastKernelVersion(5, 10, 0)) GTEST_SKIP() << "Too old base kernel.";
+    ASSERT_TRUE(exists("/proc/sys/net/ipv6/conf/default/accept_ra_min_lft"));
+}
 
 TEST(KernelTest, TestSupportsCommonUsbEthernetDongles) {
     KernelConfigVerifier configVerifier;

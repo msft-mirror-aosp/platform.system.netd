@@ -1092,20 +1092,32 @@ binder::Status NetdNativeService::networkClearPermissionForUser(const std::vecto
 
 binder::Status NetdNativeService::networkSetProtectAllow(int32_t uid) {
     ENFORCE_NETWORK_STACK_PERMISSIONS();
-    gCtls->netCtrl.allowProtect((uid_t) uid);
+    gCtls->netCtrl.allowProtect((uid_t)uid, NETID_UNSET);
     return binder::Status::ok();
 }
 
 binder::Status NetdNativeService::networkSetProtectDeny(int32_t uid) {
     ENFORCE_NETWORK_STACK_PERMISSIONS();
-    gCtls->netCtrl.denyProtect((uid_t) uid);
+    gCtls->netCtrl.denyProtect((uid_t)uid, NETID_UNSET);
     return binder::Status::ok();
 }
 
 binder::Status NetdNativeService::networkCanProtect(int32_t uid, bool* ret) {
     ENFORCE_NETWORK_STACK_PERMISSIONS();
-    *ret = gCtls->netCtrl.canProtect((uid_t) uid);
+    *ret = gCtls->netCtrl.canProtect((uid_t)uid, NETID_UNSET);
     return binder::Status::ok();
+}
+
+binder::Status NetdNativeService::networkAllowBypassVpnOnNetwork(bool allow, int32_t uid,
+                                                                 int32_t netId) {
+    ENFORCE_NETWORK_STACK_PERMISSIONS();
+    int err;
+    if (allow) {
+        err = gCtls->netCtrl.allowProtect((uid_t)uid, netId);
+    } else {
+        err = gCtls->netCtrl.denyProtect((uid_t)uid, netId);
+    }
+    return statusFromErrcode(err);
 }
 
 binder::Status NetdNativeService::trafficSetNetPermForUids(int32_t, const std::vector<int32_t>&) {
