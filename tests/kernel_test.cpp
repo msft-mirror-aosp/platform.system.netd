@@ -82,8 +82,8 @@ TEST(KernelTest, TestRequireBpfUnprivDefaultOn) {
 }
 
 TEST(KernelTest, TestBpfJitAlwaysOn) {
-    // 32-bit arm & x86 kernels aren't capable of JIT-ing all of our BPF code,
-    if (bpf::isKernel32Bit()) GTEST_SKIP() << "Exempt on 32-bit kernel.";
+    if (bpf::isKernel32Bit() && !bpf::isAtLeastKernelVersion(5, 16, 0))
+        GTEST_SKIP() << "Exempt on obsolete 32-bit kernels.";
     KernelConfigVerifier configVerifier;
     ASSERT_TRUE(configVerifier.hasOption("CONFIG_BPF_JIT_ALWAYS_ON"));
 }
