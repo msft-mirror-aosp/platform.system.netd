@@ -112,6 +112,12 @@ TEST(KernelTest, TestX86Kernel64Bit) {
     ASSERT_TRUE(bpf::isKernel64Bit());
 }
 
+// Android W requires 64-bit userspace on new 6.7+ kernels.
+TEST(KernelTest, TestUser64Bit) {
+    if (!bpf::isAtLeastKernelVersion(6, 7, 0)) GTEST_SKIP() << "Exempt on < 6.7 kernel.";
+    ASSERT_TRUE(bpf::isUserspace64bit());
+}
+
 // Android V requires 4.19+
 TEST(KernelTest, TestKernel419) {
     ASSERT_TRUE(bpf::isAtLeastKernelVersion(4, 19, 0));
