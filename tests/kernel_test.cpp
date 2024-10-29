@@ -82,8 +82,8 @@ TEST(KernelTest, TestRequireBpfUnprivDefaultOn) {
 }
 
 TEST(KernelTest, TestBpfJitAlwaysOn) {
-    // 32-bit arm & x86 kernels aren't capable of JIT-ing all of our BPF code,
-    if (bpf::isKernel32Bit()) GTEST_SKIP() << "Exempt on 32-bit kernel.";
+    if (bpf::isKernel32Bit() && !bpf::isAtLeastKernelVersion(5, 16, 0))
+        GTEST_SKIP() << "Exempt on obsolete 32-bit kernels.";
     KernelConfigVerifier configVerifier;
     ASSERT_TRUE(configVerifier.hasOption("CONFIG_BPF_JIT_ALWAYS_ON"));
 }
@@ -110,6 +110,12 @@ TEST(KernelTest, TestKernel64Bit) {
 TEST(KernelTest, TestX86Kernel64Bit) {
     if (!bpf::isX86()) GTEST_SKIP() << "Exempt on non-x86 architecture.";
     ASSERT_TRUE(bpf::isKernel64Bit());
+}
+
+// Android W requires 64-bit userspace on new 6.7+ kernels.
+TEST(KernelTest, TestUser64Bit) {
+    if (!bpf::isAtLeastKernelVersion(6, 7, 0)) GTEST_SKIP() << "Exempt on < 6.7 kernel.";
+    ASSERT_TRUE(bpf::isUserspace64bit());
 }
 
 // Android V requires 4.19+
