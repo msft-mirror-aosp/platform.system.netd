@@ -112,18 +112,13 @@ TEST(KernelTest, TestX86Kernel64Bit) {
     ASSERT_TRUE(bpf::isKernel64Bit());
 }
 
-// Android W requires 64-bit userspace on new 6.7+ kernels.
+// Android 25Q2 requires 64-bit userspace on new 6.7+ kernels.
 TEST(KernelTest, TestUser64Bit) {
     if (!bpf::isAtLeastKernelVersion(6, 7, 0)) GTEST_SKIP() << "Exempt on < 6.7 kernel.";
     ASSERT_TRUE(bpf::isUserspace64bit());
 }
 
-// Android V requires 4.19+
-TEST(KernelTest, TestKernel419) {
-    ASSERT_TRUE(bpf::isAtLeastKernelVersion(4, 19, 0));
-}
-
-// Android W requires 5.4+
+// Android 25Q2 requires 5.4+
 TEST(KernelTest, TestKernel54) {
     ASSERT_TRUE(bpf::isAtLeastKernelVersion(5, 4, 0));
 }
@@ -152,7 +147,6 @@ static bool isGSI() {
     ASSERT_TRUE(bpf::isAtLeastKernelVersion((major), (minor), (sub))); \
 } while (0)
 
-TEST(KernelTest, TestMinRequiredLTS_4_19) { ifIsKernelThenMinLTS(4, 19, 236); }
 TEST(KernelTest, TestMinRequiredLTS_5_4)  { ifIsKernelThenMinLTS(5, 4, 186); }
 TEST(KernelTest, TestMinRequiredLTS_5_10) { ifIsKernelThenMinLTS(5, 10, 199); }
 TEST(KernelTest, TestMinRequiredLTS_5_15) { ifIsKernelThenMinLTS(5, 15, 136); }
