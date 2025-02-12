@@ -428,16 +428,6 @@ void setTetherStatsParcelVecByInterface(std::vector<TetherStatsParcel>* tetherSt
     }
 }
 
-std::vector<std::string> tetherStatsParcelVecToStringVec(std::vector<TetherStatsParcel>* tVec) {
-    std::vector<std::string> result;
-    for (const auto& t : *tVec) {
-        result.push_back(StringPrintf("%s:%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64,
-                                      t.iface.c_str(), t.rxBytes, t.rxPackets, t.txBytes,
-                                      t.txPackets));
-    }
-    return result;
-}
-
 }  // namespace
 
 binder::Status NetdNativeService::tetherGetStats(
@@ -448,7 +438,6 @@ binder::Status NetdNativeService::tetherGetStats(
         return asBinderStatus(statsList);
     }
     setTetherStatsParcelVecByInterface(tetherStatsParcelVec, statsList.value());
-    auto statsResults = tetherStatsParcelVecToStringVec(tetherStatsParcelVec);
     return binder::Status::ok();
 }
 
