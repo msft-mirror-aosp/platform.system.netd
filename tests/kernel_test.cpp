@@ -82,8 +82,6 @@ TEST(KernelTest, TestRequireBpfUnprivDefaultOn) {
 }
 
 TEST(KernelTest, TestBpfJitAlwaysOn) {
-    if (bpf::isKernel32Bit() && !bpf::isAtLeastKernelVersion(5, 16, 0))
-        GTEST_SKIP() << "Exempt on obsolete 32-bit kernels.";
     KernelConfigVerifier configVerifier;
     ASSERT_TRUE(configVerifier.hasOption("CONFIG_BPF_JIT_ALWAYS_ON"));
 }
