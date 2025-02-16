@@ -331,12 +331,14 @@ void Controllers::init() {
 
     if (int ret = RouteController::Init(NetworkController::LOCAL_NET_ID)) {
         gLog.error("Failed to initialize RouteController (%s)", strerror(-ret));
+        exit(2);
     }
     gLog.info("Initializing RouteController: %" PRId64 "us", s.getTimeAndResetUs());
 
     netdutils::Status xStatus = XfrmController::Init();
     if (!isOk(xStatus)) {
         gLog.error("Failed to initialize XfrmController (%s)", netdutils::toString(xStatus).c_str());
+        exit(3);
     };
     gLog.info("Initializing XfrmController: %" PRId64 "us", s.getTimeAndResetUs());
 }
