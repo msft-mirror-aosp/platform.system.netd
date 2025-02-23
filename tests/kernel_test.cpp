@@ -82,8 +82,6 @@ TEST(KernelTest, TestRequireBpfUnprivDefaultOn) {
 }
 
 TEST(KernelTest, TestBpfJitAlwaysOn) {
-    if (bpf::isKernel32Bit() && !bpf::isAtLeastKernelVersion(5, 16, 0))
-        GTEST_SKIP() << "Exempt on obsolete 32-bit kernels.";
     KernelConfigVerifier configVerifier;
     ASSERT_TRUE(configVerifier.hasOption("CONFIG_BPF_JIT_ALWAYS_ON"));
 }
@@ -152,7 +150,7 @@ TEST(KernelTest, TestMinRequiredLTS_5_10) { ifIsKernelThenMinLTS(5, 10, 210); }
 TEST(KernelTest, TestMinRequiredLTS_5_15) { ifIsKernelThenMinLTS(5, 15, 149); }
 TEST(KernelTest, TestMinRequiredLTS_6_1)  { ifIsKernelThenMinLTS(6, 1, 78); }
 TEST(KernelTest, TestMinRequiredLTS_6_6)  { ifIsKernelThenMinLTS(6, 6, 30); }
-TEST(KernelTest, TestMinRequiredLTS_6_12) { ifIsKernelThenMinLTS(6, 12, 5); }
+TEST(KernelTest, TestMinRequiredLTS_6_12) { ifIsKernelThenMinLTS(6, 12, 13); }
 
 TEST(KernelTest, TestSupportsAcceptRaMinLft) {
     if (isGSI()) GTEST_SKIP() << "Meaningless on GSI due to ancient kernels.";
