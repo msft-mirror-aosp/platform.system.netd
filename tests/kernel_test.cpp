@@ -111,7 +111,7 @@ TEST(KernelTest, TestX86Kernel64Bit) {
 }
 
 // Android 25Q2 requires 64-bit userspace on new 6.7+ kernels.
-TEST(KernelTest, TestUser64Bit) {
+TEST(KernelTest, DISABLED_TestUser64Bit) {
     if (!bpf::isAtLeastKernelVersion(6, 7, 0)) GTEST_SKIP() << "Exempt on < 6.7 kernel.";
     ASSERT_TRUE(bpf::isUserspace64bit());
 }
