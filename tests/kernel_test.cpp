@@ -80,6 +80,10 @@ class KernelConfigVerifier final {
     std::unordered_set<std::string> mLoadedModules;
 };
 
+bool isCuttlefish() {
+    return GetProperty("ro.product.board", "") == "cutf";
+}
+
 }  // namespace
 
 /**
@@ -196,6 +200,21 @@ TEST(KernelTest, TestSupportsCommonUsbEthernetDongles) {
         EXPECT_TRUE(configVerifier.hasModule("CONFIG_USB_RTL8153_ECM"));
         EXPECT_TRUE(configVerifier.hasModule("CONFIG_AX88796B_PHY"));
     }
+}
+
+/**
+ * In addition to TestSupportsCommonUsbEthernetDongles, ensure that USB CDC host drivers are either
+ * builtin or loaded on physical devices.
+ */
+// TODO: check for hasSystemFeature(FEATURE_USB_HOST)
+TEST(KernelTest, TestSupportsUsbCdcHost) {
+    KernelConfigVerifier configVerifier;
+    // TODO: Load these modules on cuttlefish.
+    if (isCuttlefish()) GTEST_SKIP() << "Exempt on cuttlefish";
+
+    EXPECT_TRUE(configVerifier.isAvailable("CONFIG_USB_NET_CDC_NCM", "cdc_ncm"));
+    EXPECT_TRUE(configVerifier.isAvailable("CONFIG_USB_NET_CDC_EEM", "cdc_eem"));
+    EXPECT_TRUE(configVerifier.isAvailable("CONFIG_USB_NET_CDCETHER", "cdc_ether"));
 }
 
 }  // namespace net
