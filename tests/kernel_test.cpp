@@ -217,5 +217,12 @@ TEST(KernelTest, TestSupportsUsbCdcHost) {
     EXPECT_TRUE(configVerifier.isAvailable("CONFIG_USB_NET_CDCETHER", "cdc_ether"));
 }
 
+// TODO: check for hasSystemFeature(FEATURE_USB_ACCESSORY)
+TEST(KernelTest, TestSupportsUsbNcmGadget) {
+    KernelConfigVerifier configVerifier;
+    EXPECT_TRUE(configVerifier.isAvailable("CONFIG_USB_F_NCM", "usb_f_ncm"));
+    EXPECT_TRUE(configVerifier.hasOption("CONFIG_USB_CONFIGFS_NCM"));
+}
+
 }  // namespace net
 }  // namespace android
