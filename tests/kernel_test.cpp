@@ -183,6 +183,15 @@ TEST(KernelTest, TestSupportsAcceptRaMinLft) {
     ASSERT_TRUE(exists("/proc/sys/net/ipv6/conf/default/accept_ra_min_lft"));
 }
 
+TEST(KernelTest, TestSupportsBpfLsm) {
+    if (isGSI()) GTEST_SKIP() << "Meaningless on GSI due to ancient kernels.";
+    if (!bpf::isAtLeastKernelVersion(5, 16, 0)) GTEST_SKIP() << "Too old base kernel.";
+    // TODO: verify this on cuttlefish as well.
+    if (isCuttlefish()) GTEST_SKIP() << "Exempt on cuttlefish";
+    KernelConfigVerifier configVerifier;
+    ASSERT_TRUE(configVerifier.hasOption("CONFIG_BPF_LSM"));
+}
+
 TEST(KernelTest, TestSupportsCommonUsbEthernetDongles) {
     KernelConfigVerifier configVerifier;
     if (!configVerifier.hasModule("CONFIG_USB")) GTEST_SKIP() << "Exempt without USB support.";
